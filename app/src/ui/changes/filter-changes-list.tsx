@@ -58,7 +58,7 @@ import { RepoRulesInfo } from '../../models/repo-rules'
 import { IAheadBehind } from '../../models/branch'
 import { StashDiffViewerId } from '../stashing'
 import { AugmentedSectionFilterList } from '../lib/augmented-filter-list'
-import { IFilterListGroup, IFilterListItem } from '../lib/filter-list'
+import { IFilterListGroup } from '../lib/filter-list'
 import { ClickSource } from '../lib/list'
 import memoizeOne from 'memoize-one'
 import { IMatches } from '../../lib/fuzzy-find'
@@ -76,11 +76,13 @@ import { ChangesListFilterOptions } from './changes-list-filter-options'
 import { HookProgress } from '../../lib/git'
 import { formatNumber } from '../../lib/format-number'
 
-export interface IChangesListItem extends IFilterListItem {
-  readonly id: string
-  readonly text: ReadonlyArray<string>
-  readonly change: WorkingDirectoryFileChange
-}
+import {
+  ChangeTreeGroupSeparator,
+  createChangeTreeGroups,
+  IChangeTreeItem,
+} from './change-tree-groups'
+
+export type IChangesListItem = IChangeTreeItem
 
 const RowHeight = 29
 const StashIcon: OcticonSymbolVariant = {
@@ -357,12 +359,11 @@ export class FilterChangesList extends React.Component<
   public constructor(props: IFilterChangesListProps) {
     super(props)
 
-    const listItems = this.createListItems(props.workingDirectory.files)
-    const groups = [listItems]
+    const groups = createChangeTreeGroups(props.workingDirectory.files)
 
     this.state = {
       filteredItems: new Map<string, IChangesListItem>(
-        listItems.items.map(i => [i.id, i])
+        groups.flatMap(group => group.items).map(i => [i.id, i])
       ),
       selectedItems: getSelectedItemsFromProps(props),
       focusedRow: null,
@@ -382,24 +383,31 @@ export class FilterChangesList extends React.Component<
     ) {
       this.setState({
         selectedItems: getSelectedItemsFromProps(nextProps),
-        groups: [this.createListItems(nextProps.workingDirectory.files)],
+        groups: createChangeTreeGroups(nextProps.workingDirectory.files),
       })
     }
   }
 
-  private createListItems(
-    files: ReadonlyArray<WorkingDirectoryFileChange>
-  ): IFilterListGroup<IChangesListItem> {
-    const items = files.map(file => ({
-      text: [file.path],
-      id: file.id,
-      change: file,
-    }))
+  private renderChangeTreeGroup = (identifier: string): JSX.Element => {
+    const [section, directory] = identifier.split(ChangeTreeGroupSeparator)
+    const isStaged = section === 'staged'
+    const label = isStaged ? 'Staged changes' : 'Unstaged changes'
+    const path = directory === '.' ? 'Repository root' : directory
 
-    return {
-      identifier: 'changed-files',
-      items,
-    }
+    return (
+      <div
+        className={classNames(
+          'filter-list-group-header',
+          'change-tree-group',
+          isStaged ? 'staged' : 'unstaged'
+        )}
+      >
+        <Octicon symbol={octicons.chevronDown} />
+        <span className="change-tree-section">{label}</span>
+        <Octicon symbol={octicons.fileDirectory} />
+        <span className="change-tree-path">{path}</span>
+      </div>
+    )
   }
 
   private onIncludeAllChanged = (event: React.FormEvent<HTMLInputElement>) => {
@@ -1346,6 +1354,7 @@ export class FilterChangesList extends React.Component<
             selectedItems={this.state.selectedItems}
             selectionMode="multi"
             renderItem={this.renderChangedFile}
+            renderGroupHeader={this.renderChangeTreeGroup}
             onItemClick={this.onChangedFileClick}
             onItemDoubleClick={this.onChangedFileDoubleClick}
             onItemKeyboardFocus={this.onChangedFileFocus}

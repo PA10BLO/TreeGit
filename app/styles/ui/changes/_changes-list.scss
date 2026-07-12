@@ -2,6 +2,38 @@
 
 #changes-list {
   min-height: 0;
+
+  .change-tree-group {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-half);
+    color: var(--text-secondary-color);
+    background: var(--box-alt-background-color);
+    border-bottom: 1px solid var(--box-border-color);
+
+    .octicon {
+      flex: 0 0 auto;
+    }
+
+    .change-tree-section {
+      color: var(--text-color);
+      font-weight: var(--font-weight-semibold);
+    }
+
+    .change-tree-path {
+      min-width: 0;
+      font-weight: var(--font-weight-normal);
+      @include ellipsis;
+    }
+
+    &.staged .change-tree-section {
+      color: var(--color-new);
+    }
+
+    &.unstaged .change-tree-section {
+      color: var(--color-modified);
+    }
+  }
 }
 
 /** A React component holding the currently selected repository's changes */
