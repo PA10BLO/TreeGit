@@ -45,10 +45,7 @@ export class ChangesListFilterOptions extends React.Component<
   IChangesListFilterOptionsState
 > {
   private getFilterCounts = memoizeOne(
-    (
-      wd: WorkingDirectoryStatus,
-      filteredItems: Map<string, IChangesListItem>
-    ) => {
+    (filteredItems: Map<string, IChangesListItem>) => {
       const counts = {
         newFilesCount: 0,
         modifiedFilesCount: 0,
@@ -57,8 +54,14 @@ export class ChangesListFilterOptions extends React.Component<
         excludedFilesCount: 0,
       }
 
-      Array.from(filteredItems.values()).forEach(v => {
-        const file = wd.findFileWithID(v.id)
+      const filesById = new Map(
+        Array.from(filteredItems.values()).map(item => [
+          item.change.id,
+          item.change,
+        ])
+      )
+
+      Array.from(filesById.values()).forEach(file => {
         if (file) {
           if (file.isNew() || file.isUntracked()) {
             counts.newFilesCount++
@@ -69,12 +72,19 @@ export class ChangesListFilterOptions extends React.Component<
           if (file.isDeleted()) {
             counts.deletedFilesCount++
           }
-          if (file.isIncludedInCommit()) {
-            counts.includedFilesCount++
-          }
-          if (file.isExcludedFromCommit()) {
-            counts.excludedFilesCount++
-          }
+        }
+      })
+
+      Array.from(filteredItems.values()).forEach(item => {
+        const isStagedRow = item.section === 'staged'
+        const isUnstagedRow = item.section === 'unstaged'
+
+        if (isStagedRow || item.change.isIncludedInCommit()) {
+          counts.includedFilesCount++
+        }
+
+        if (isUnstagedRow || item.change.isExcludedFromCommit()) {
+          counts.excludedFilesCount++
         }
       })
 
@@ -143,10 +153,7 @@ export class ChangesListFilterOptions extends React.Component<
       deletedFilesCount,
       excludedFilesCount,
       includedFilesCount,
-    } = this.getFilterCounts(
-      this.props.workingDirectory,
-      this.props.filteredItems
-    )
+    } = this.getFilterCounts(this.props.filteredItems)
 
     return (
       <Popover

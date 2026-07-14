@@ -27,6 +27,8 @@ import { enableWorktreeSupport } from '../../lib/feature-flag'
 import { SectionFilterList } from '../lib/section-filter-list'
 import { assertNever } from '../../lib/fatal-error'
 import { IAheadBehind } from '../../models/branch'
+import { SubmoduleEntry } from '../../models/submodule'
+import { HighlightText } from '../lib/highlight-text'
 
 const BlankSlateImage = encodePathAsUrl(__dirname, 'static/empty-no-repo.svg')
 
@@ -34,6 +36,7 @@ interface IRepositoriesListProps {
   readonly selectedRepository: Repositoryish | null
   readonly repositories: ReadonlyArray<Repositoryish>
   readonly recentRepositories: ReadonlyArray<number>
+  readonly submodules?: ReadonlyArray<SubmoduleEntry>
 
   /** A cache of the latest repository state values, keyed by the repository id */
   readonly localRepositoryStateLookup: ReadonlyMap<
@@ -97,10 +100,29 @@ function findMatchingListItem(
   if (selectedRepository !== null) {
     for (const group of groups) {
       for (const item of group.items) {
-        if (item.repository.id === selectedRepository.id) {
+        if (
+          item.submodulePath === null &&
+          item.repository.id === selectedRepository.id
+        ) {
           return item
         }
       }
+    }
+  }
+
+  return null
+}
+
+function findListItemByID(
+  groups: ReadonlyArray<
+    IFilterListGroup<IRepositoryListItem, RepositoryListGroup>
+  >,
+  id: string
+) {
+  for (const group of groups) {
+    const item = group.items.find(item => item.id === id)
+    if (item !== undefined) {
+      return item
     }
   }
 
@@ -122,14 +144,18 @@ export class RepositoriesList extends React.Component<
     (
       repositories: ReadonlyArray<Repositoryish> | null,
       localRepositoryStateLookup: ReadonlyMap<number, ILocalRepositoryState>,
-      recentRepositories: ReadonlyArray<number>
+      recentRepositories: ReadonlyArray<number>,
+      selectedRepository: Repository | null,
+      submodules: ReadonlyArray<SubmoduleEntry>
     ) =>
       repositories === null
         ? []
         : groupRepositories(
             repositories,
             localRepositoryStateLookup,
-            recentRepositories
+            recentRepositories,
+            selectedRepository,
+            submodules
           )
   )
 
@@ -154,6 +180,27 @@ export class RepositoriesList extends React.Component<
   }
 
   private renderItem = (item: IRepositoryListItem, matches: IMatches) => {
+    if (item.submodulePath !== null && item.submoduleDisplayName !== null) {
+      return (
+        <div className="repository-list-item submodule direct-submodule">
+          <Octicon
+            className="icon-for-repository"
+            symbol={octicons.fileSubmodule}
+          />
+          <div className="name">
+            <HighlightText
+              text={item.submoduleDisplayName}
+              highlight={matches.title}
+            />
+          </div>
+          <Octicon
+            className="direct-submodule-open"
+            symbol={octicons.chevronRight}
+          />
+        </div>
+      )
+    }
+
     const repository = item.repository
     return (
       <RepositoryListItem
@@ -163,6 +210,7 @@ export class RepositoriesList extends React.Component<
         matches={matches}
         aheadBehind={item.aheadBehind}
         changedFilesCount={item.changedFilesCount}
+        isSubmodule={item.isSubmodule}
       />
     )
   }
@@ -190,11 +238,17 @@ export class RepositoriesList extends React.Component<
   private renderRowFocusTooltip = (
     item: IRepositoryListItem
   ): JSX.Element | string | null => {
-    const { repository, aheadBehind, changedFilesCount } = item
+    const { repository, aheadBehind, changedFilesCount, isSubmodule } = item
     const gitHubRepo =
       repository instanceof Repository ? repository.gitHubRepository : null
-    const alias = repository instanceof Repository ? repository.alias : null
-    const realName = gitHubRepo ? gitHubRepo.fullName : repository.name
+    const alias =
+      item.submodulePath === null && repository instanceof Repository
+        ? repository.alias
+        : null
+    const realName =
+      item.submoduleDisplayName ??
+      (gitHubRepo ? gitHubRepo.fullName : repository.name)
+    const path = item.submodulePath ?? repository.path
     const aheadBehindTooltip = this.getAheadBehindTooltip(aheadBehind)
     const hasChanges = changedFilesCount > 0
     const uncommittedChangesTooltip = hasChanges
@@ -213,8 +267,14 @@ export class RepositoriesList extends React.Component<
         </div>
         <div>
           <div className="label">Path: </div>
-          {repository.path}
+          {path}
         </div>
+        {isSubmodule && (
+          <div>
+            <div className="label">Type: </div>
+            Submodule
+          </div>
+        )}
         {aheadBehindTooltip && (
           <div>
             <div className="label">
@@ -250,6 +310,8 @@ export class RepositoriesList extends React.Component<
       return group.owner.login
     } else if (kind === 'recent') {
       return 'Recent'
+    } else if (kind === 'submodules') {
+      return 'Submodules'
     } else {
       assertNever(kind, `Unknown repository group kind ${kind}`)
     }
@@ -272,6 +334,11 @@ export class RepositoriesList extends React.Component<
   }
 
   private onItemClick = (item: IRepositoryListItem) => {
+    if (item.submodulePath !== null) {
+      this.props.dispatcher.openOrAddRepository(item.submodulePath)
+      return
+    }
+
     const hasIndicator =
       item.changedFilesCount > 0 ||
       (item.aheadBehind !== null
@@ -286,6 +353,10 @@ export class RepositoriesList extends React.Component<
     event: React.MouseEvent<HTMLDivElement>
   ) => {
     event.preventDefault()
+
+    if (item.submodulePath !== null) {
+      return
+    }
 
     const items = generateRepositoryListContextMenu({
       onRemoveRepository: this.props.onRemoveRepository,
@@ -311,7 +382,11 @@ export class RepositoriesList extends React.Component<
     showContextualMenu(items)
   }
 
-  private getItemAriaLabel = (item: IRepositoryListItem) => item.repository.name
+  private getItemAriaLabel = (item: IRepositoryListItem) =>
+    item.submoduleDisplayName ??
+    (item.isSubmodule
+      ? `${item.repository.name}, submodule`
+      : item.repository.name)
   private getGroupAriaLabelGetter =
     (
       groups: ReadonlyArray<
@@ -325,7 +400,11 @@ export class RepositoriesList extends React.Component<
     const groups = this.getRepositoryGroups(
       this.props.repositories,
       this.props.localRepositoryStateLookup,
-      this.props.recentRepositories
+      this.props.recentRepositories,
+      this.props.selectedRepository instanceof Repository
+        ? this.props.selectedRepository
+        : null,
+      this.props.submodules ?? []
     )
 
     // So there's two types of selection at play here. There's the repository
@@ -333,8 +412,12 @@ export class RepositoriesList extends React.Component<
     // the list itself. If the user has selected a repository using keyboard
     // navigation we want to honor that selection. If the user hasn't selected a
     // repository yet we'll select the repository currently selected in the app.
+    const selectedItemFromState =
+      this.state.selectedItem === null
+        ? null
+        : findListItemByID(groups, this.state.selectedItem.id)
     const selectedItem =
-      this.state.selectedItem ??
+      selectedItemFromState ??
       this.getSelectedListItem(groups, this.props.selectedRepository)
 
     return (
@@ -354,6 +437,7 @@ export class RepositoriesList extends React.Component<
           invalidationProps={{
             repositories: this.props.repositories,
             filterText: this.props.filterText,
+            submodules: this.props.submodules,
           }}
           onItemContextMenu={this.onItemContextMenu}
           getGroupAriaLabel={this.getGroupAriaLabelGetter(groups)}

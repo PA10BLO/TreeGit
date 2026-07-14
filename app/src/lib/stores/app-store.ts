@@ -2897,9 +2897,15 @@ export class AppStore extends TypedBaseStore<IAppState> {
       return null
     }
 
+    const submodules = await gitStore.loadSubmodules()
+
     this.repositoryStateCache.updateChangesState(repository, state =>
       updateChangedFiles(state, status, clearPartialState)
     )
+
+    this.repositoryStateCache.updateChangesState(repository, () => ({
+      submodules,
+    }))
 
     this.repositoryStateCache.updateChangesState(repository, state => ({
       conflictState: updateConflictState(state, status, this.statsStore),

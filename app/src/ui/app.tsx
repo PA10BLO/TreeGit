@@ -3213,6 +3213,10 @@ export class App extends React.Component<IAppProps, IAppState> {
     const { useCustomShell, selectedShell } = this.state
     const filterText = this.state.repositoryFilterText
     const repositories = this.state.repositories
+    const submodules =
+      this.state.selectedState?.type === SelectionType.Repository
+        ? this.state.selectedState.state.changesState.submodules ?? []
+        : []
     return (
       <RepositoriesList
         filterText={filterText}
@@ -3220,6 +3224,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         selectedRepository={selectedRepository}
         onSelectionChanged={this.onSelectionChanged}
         repositories={repositories}
+        submodules={submodules}
         recentRepositories={this.state.recentRepositories}
         localRepositoryStateLookup={this.state.localRepositoryStateLookup}
         askForConfirmationOnRemoveRepository={

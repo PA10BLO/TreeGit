@@ -2,6 +2,7 @@ import * as React from 'react'
 
 import { PathLabel } from '../lib/path-label'
 import { Octicon, iconForStatus } from '../octicons'
+import * as octicons from '../octicons/octicons.generated'
 import { Checkbox, CheckboxValue } from '../lib/checkbox'
 import { mapStatus } from '../../lib/status'
 import { WorkingDirectoryFileChange } from '../../models/status'
@@ -58,13 +59,15 @@ export class ChangedFile extends React.Component<IChangedFileProps, {}> {
     const checkboxWidth = 20
     const statusWidth = 16
     const filePadding = 5
+    const actionsWidth = 20
 
     const availablePathWidth =
       availableWidth -
       listItemPadding -
       checkboxWidth -
       filePadding -
-      statusWidth
+      statusWidth -
+      actionsWidth
 
     const includedText =
       this.props.include === true
@@ -115,6 +118,7 @@ export class ChangedFile extends React.Component<IChangedFileProps, {}> {
             className={'status status-' + fileStatus.toLowerCase()}
           />
         </TooltippedContent>
+        <Octicon className="file-actions" symbol={octicons.kebabHorizontal} />
       </div>
     )
   }

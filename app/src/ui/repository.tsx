@@ -312,6 +312,7 @@ export class RepositoryView extends React.Component<
         isShowingFoldout={this.props.isShowingFoldout}
         externalEditorLabel={this.props.externalEditorLabel}
         onOpenInExternalEditor={this.props.onOpenInExternalEditor}
+        onOpenSubmodule={this.onOpenSubmoduleFromList}
         onChangesListScrolled={this.onChangesListScrolled}
         changesListScrollTop={scrollTop}
         shouldNudgeToCommit={
@@ -624,6 +625,10 @@ export class RepositoryView extends React.Component<
 
   private onOpenSubmodule = (fullPath: string) => {
     this.props.dispatcher.incrementMetric('openSubmoduleFromDiffCount')
+    this.props.dispatcher.openOrAddRepository(fullPath)
+  }
+
+  private onOpenSubmoduleFromList = (fullPath: string) => {
     this.props.dispatcher.openOrAddRepository(fullPath)
   }
 

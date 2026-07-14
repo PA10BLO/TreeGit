@@ -16,6 +16,7 @@ import { Commit } from '../models/commit'
 import { CommittedFileChange, WorkingDirectoryStatus } from '../models/status'
 import { WorktreeEntry } from '../models/worktree'
 import { CloningRepository } from '../models/cloning-repository'
+import { SubmoduleEntry } from '../models/submodule'
 import { IMenu } from '../models/app-menu'
 import { IRemote } from '../models/remote'
 import { CloneRepositoryTab } from '../models/clone-repository-tab'
@@ -808,6 +809,7 @@ export type ChangesSelection =
 
 export interface IChangesState {
   readonly workingDirectory: WorkingDirectoryStatus
+  readonly submodules?: ReadonlyArray<SubmoduleEntry>
 
   /** The commit message for a work-in-progress commit in the changes view. */
   readonly commitMessage: ICommitMessage

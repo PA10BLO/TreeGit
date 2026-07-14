@@ -45,6 +45,16 @@
       width: 16px;
     }
 
+    &.submodule .icon-for-repository {
+      color: var(--text-secondary-color);
+    }
+
+    .direct-submodule-open {
+      flex-shrink: 0;
+      margin-left: auto;
+      color: var(--text-secondary-color);
+    }
+
     .name {
       // Long repository names truncate and ellipse
       @include ellipsis;

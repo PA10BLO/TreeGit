@@ -80,6 +80,7 @@ interface IChangesSidebarProps {
    * @param fullPath The full path to the file on disk
    */
   readonly onOpenInExternalEditor: (fullPath: string) => void
+  readonly onOpenSubmodule: (fullPath: string) => void
   readonly onChangesListScrolled: (scrollTop: number) => void
   readonly changesListScrollTop?: number
 
@@ -426,6 +427,7 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
           repository={this.props.repository}
           repositoryAccount={repositoryAccount}
           workingDirectory={workingDirectory}
+          submodules={this.props.changes.submodules ?? []}
           conflictState={conflictState}
           mostRecentLocalCommit={this.props.mostRecentLocalCommit}
           rebaseConflictState={rebaseConflictState}
@@ -442,6 +444,7 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
           }
           onDiscardChangesFromFiles={this.onDiscardChangesFromFiles}
           onOpenItem={this.onOpenItem}
+          onOpenSubmodule={this.props.onOpenSubmodule}
           onRowClick={this.onChangedItemClick}
           commitAuthor={this.props.commitAuthor}
           branch={this.props.branch}

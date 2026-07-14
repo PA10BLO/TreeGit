@@ -18,6 +18,7 @@ import { Tip, TipState } from '../../models/tip'
 import { Commit } from '../../models/commit'
 import { IRemote } from '../../models/remote'
 import { IFetchProgress, IRevertProgress } from '../../models/progress'
+import { SubmoduleEntry } from '../../models/submodule'
 import {
   ICommitMessage,
   DefaultCommitMessage,
@@ -1163,6 +1164,14 @@ export class GitStore extends BaseStore {
     this.emitUpdate()
 
     return status
+  }
+
+  public async loadSubmodules(): Promise<ReadonlyArray<SubmoduleEntry>> {
+    return (
+      (await this.performFailableOperation(() =>
+        listSubmodules(this.repository)
+      )) ?? []
+    )
   }
 
   /**
