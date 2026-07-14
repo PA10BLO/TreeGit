@@ -1803,9 +1803,11 @@ export class FilterChangesList extends React.Component<
     const showSubmodulesView =
       isSubmodulesView || this.props.submodules.length > 0
     const submoduleCount = formatNumber(this.props.submodules.length)
-    const submoduleTooltip = `Show ${submoduleCount} submodule${plural(
-      this.props.submodules.length
-    )}`
+    const submoduleTooltip = isSubmodulesView
+      ? 'Hide submodules'
+      : `Show ${submoduleCount} submodule${plural(
+          this.props.submodules.length
+        )}`
 
     const visibleFiles = this.getUniqueFilteredChanges().length
 
@@ -1841,11 +1843,11 @@ export class FilterChangesList extends React.Component<
             })}
             size="small"
             tooltip={submoduleTooltip}
+            ariaLabel={`Submodules (${submoduleCount})`}
             ariaPressed={isSubmodulesView}
             onClick={this.onSubmodulesViewModeClick}
           >
             <Octicon symbol={octicons.fileSubmodule} />
-            <span>Submodules</span>
             <span className="submodules-view-count">{submoduleCount}</span>
           </Button>
         )}
