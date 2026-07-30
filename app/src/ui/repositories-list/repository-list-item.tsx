@@ -128,8 +128,11 @@ export class RepositoryListItem extends React.Component<
       this.props.repository instanceof Repository
     ) {
       return (
-        nextProps.repository.id !== this.props.repository.id ||
+        nextProps.repository.hash !== this.props.repository.hash ||
+        nextProps.needsDisambiguation !== this.props.needsDisambiguation ||
         nextProps.matches !== this.props.matches ||
+        nextProps.aheadBehind !== this.props.aheadBehind ||
+        nextProps.changedFilesCount !== this.props.changedFilesCount ||
         nextProps.isSubmodule !== this.props.isSubmodule ||
         nextProps.isInRepositoryFolder !== this.props.isInRepositoryFolder
       )

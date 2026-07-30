@@ -434,9 +434,7 @@ function buildStatusMap(
     combinedStatus.submoduleStatus !== undefined &&
     !combinedStatus.submoduleStatus.commitChanged
       ? DiffSelectionType.None
-      : hasStagedChanges
-      ? DiffSelectionType.All
-      : DiffSelectionType.None
+      : DiffSelectionType.All
 
   const selection = DiffSelection.fromInitialSelection(initialSelectionType)
 

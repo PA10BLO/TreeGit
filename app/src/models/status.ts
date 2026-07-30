@@ -303,13 +303,9 @@ export class WorkingDirectoryFileChange extends FileChange {
     path: string,
     status: AppFileStatus,
     public readonly selection: DiffSelection,
-    public readonly hasStagedChanges: boolean = selection.getSelectionType() !==
-      DiffSelectionType.None,
-    public readonly hasUnstagedChanges: boolean = selection.getSelectionType() !==
-      DiffSelectionType.All,
-    public readonly stagedStatus: AppFileStatus | null = hasStagedChanges
-      ? status
-      : null,
+    public readonly hasStagedChanges: boolean = false,
+    public readonly hasUnstagedChanges: boolean = true,
+    public readonly stagedStatus: AppFileStatus | null = null,
     public readonly unstagedStatus: AppFileStatus | null = hasUnstagedChanges
       ? status
       : null

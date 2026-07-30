@@ -581,6 +581,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private readonly gitStoreCache: GitStoreCache
   private readonly stagedFileOperations = new Map<string, Promise<void>>()
   private readonly statusRequestIds = new Map<string, number>()
+  private readonly changesDiffRequestIds = new Map<string, number>()
 
   private accounts: ReadonlyArray<Account> = new Array<Account>()
   private repositories: ReadonlyArray<Repository> = new Array<Repository>()
@@ -3451,6 +3452,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private async updateChangesWorkingDirectoryDiff(
     repository: Repository
   ): Promise<void> {
+    const requestId = (this.changesDiffRequestIds.get(repository.hash) ?? 0) + 1
+    this.changesDiffRequestIds.set(repository.hash, requestId)
     const stateBeforeLoad = this.repositoryStateCache.get(repository)
     const changesStateBeforeLoad = stateBeforeLoad.changesState
 
@@ -3499,6 +3502,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
       this.hideWhitespaceInChangesDiff,
       diffKindBeforeLoad
     )
+
+    if (this.changesDiffRequestIds.get(repository.hash) !== requestId) {
+      return
+    }
 
     const stateAfterLoad = this.repositoryStateCache.get(repository)
     const changesState = stateAfterLoad.changesState
@@ -3854,9 +3861,15 @@ export class AppStore extends TypedBaseStore<IAppState> {
   ) {
     this.statsStore.recordCommit()
 
-    const includedPartialSelections = selectedFiles.some(
-      file => file.selection.getSelectionType() === DiffSelectionType.Partial
-    )
+    const includedPartialSelections =
+      repositoryState.changesState.isUsingStagingWorkflow === true
+        ? selectedFiles.some(
+            file => file.hasStagedChanges && file.hasUnstagedChanges
+          )
+        : selectedFiles.some(
+            file =>
+              file.selection.getSelectionType() === DiffSelectionType.Partial
+          )
     if (includedPartialSelections) {
       this.statsStore.increment('partialCommits')
     }

@@ -1533,8 +1533,11 @@ export class FilterChangesList extends React.Component<
 
     const firstFile = files[0]
     const fileName = basename(firstFile.path)
+    const status = this.props.isUsingStagingWorkflow
+      ? firstFile.stagedStatus ?? firstFile.status
+      : firstFile.status
 
-    switch (firstFile.status.kind) {
+    switch (status.kind) {
       case AppFileStatusKind.New:
       case AppFileStatusKind.Untracked:
         return `Create ${fileName}`
