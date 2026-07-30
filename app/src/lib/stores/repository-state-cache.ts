@@ -377,10 +377,10 @@ function getInitialRepositoryState(): IRepositoryState {
       selection: {
         kind: ChangesSelectionKind.WorkingDirectory,
         selectedFileIDs: [],
-        diffKind: WorkingDirectoryDiffKind.Staged,
+        diffKind: WorkingDirectoryDiffKind.Combined,
         diff: null,
       },
-      isUsingStagingWorkflow: true,
+      isUsingStagingWorkflow: false,
       commitMessage: DefaultCommitMessage,
       coAuthors: [],
       showCoAuthoredBy: false,

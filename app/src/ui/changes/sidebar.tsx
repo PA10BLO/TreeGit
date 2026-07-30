@@ -442,7 +442,7 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
           workingDirectory={workingDirectory}
           submodules={this.props.changes.submodules ?? []}
           isUsingStagingWorkflow={
-            this.props.changes.isUsingStagingWorkflow ?? true
+            this.props.changes.isUsingStagingWorkflow ?? false
           }
           conflictState={conflictState}
           mostRecentLocalCommit={this.props.mostRecentLocalCommit}
