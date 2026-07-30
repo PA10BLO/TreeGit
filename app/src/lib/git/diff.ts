@@ -382,8 +382,7 @@ export async function getWorkingDirectoryDiff(
     !isSubmodule &&
     sectionStatus !== null &&
     (sectionStatus.kind === AppFileStatusKind.New ||
-      sectionStatus.kind === AppFileStatusKind.Untracked) &&
-    (diffKind === WorkingDirectoryDiffKind.Unstaged || !file.hasStagedChanges)
+      sectionStatus.kind === AppFileStatusKind.Untracked)
   ) {
     // `git diff --no-index` seems to emulate the exit codes from `diff` irrespective of
     // whether you set --exit-code
