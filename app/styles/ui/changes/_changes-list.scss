@@ -181,6 +181,11 @@
               background: var(--secondary-button-background);
             }
 
+            &:disabled {
+              cursor: not-allowed;
+              opacity: 0.5;
+            }
+
             &:focus {
               outline: none;
               box-shadow: 0 0 0 2px var(--focus-color);
@@ -266,14 +271,17 @@
   .changes-file-section {
     display: flex;
     flex-direction: column;
-    min-height: 58px;
+    min-height: 29px;
     min-width: 0;
     overflow: hidden;
   }
 
   .changes-file-section-resizer {
     position: relative;
+    width: 100%;
     flex: 0 0 7px;
+    padding: 0;
+    border: 0;
     cursor: row-resize;
     background: transparent;
 
@@ -331,16 +339,14 @@
     }
   }
 
-  .file .file-actions {
-    flex-shrink: 0;
-    margin-left: var(--spacing-half);
-    color: var(--text-secondary-color);
-  }
-
   .submodules-list-view {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+
+    > [role='listitem'] {
+      width: 100%;
+    }
   }
 
   .submodule-list-item {

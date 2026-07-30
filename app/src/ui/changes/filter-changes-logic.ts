@@ -1,6 +1,21 @@
 import { IFileListFilterState } from '../../lib/app-state'
 import { IChangesListItem } from './filter-changes-list'
 import memoizeOne from 'memoize-one'
+import { AppFileStatusKind } from '../../models/status'
+
+export function getItemCommitState(item: IChangesListItem) {
+  if (item.section !== undefined) {
+    return {
+      isIncludedInCommit: item.section === 'staged',
+      isExcludedFromCommit: item.section === 'unstaged',
+    }
+  }
+
+  return {
+    isIncludedInCommit: item.change.isIncludedInCommit(),
+    isExcludedFromCommit: item.change.isExcludedFromCommit(),
+  }
+}
 
 /**
  * Apply filter options to determine if a file should be shown
@@ -17,10 +32,8 @@ export function applyFilterOptions(
   }
 
   const { change } = item
-  const isStagedRow = item.section === 'staged'
-  const isUnstagedRow = item.section === 'unstaged'
-  const isIncludedInCommit = isStagedRow || change.isIncludedInCommit()
-  const isExcludedFromCommit = isUnstagedRow || change.isExcludedFromCommit()
+  const status = item.status ?? change.status
+  const { isIncludedInCommit, isExcludedFromCommit } = getItemCommitState(item)
 
   if (filters.isIncludedInCommit && !isIncludedInCommit) {
     return false
@@ -30,15 +43,19 @@ export function applyFilterOptions(
     return false
   }
 
-  if (filters.isNewFile && !change.isNew() && !change.isUntracked()) {
+  if (
+    filters.isNewFile &&
+    status.kind !== AppFileStatusKind.New &&
+    status.kind !== AppFileStatusKind.Untracked
+  ) {
     return false
   }
 
-  if (filters.isModifiedFile && !change.isModified()) {
+  if (filters.isModifiedFile && status.kind !== AppFileStatusKind.Modified) {
     return false
   }
 
-  if (filters.isDeletedFile && !change.isDeleted()) {
+  if (filters.isDeletedFile && status.kind !== AppFileStatusKind.Deleted) {
     return false
   }
 
@@ -54,17 +71,18 @@ export const isCommittingFileHiddenByFilter = memoizeOne(
   (
     fileIdsIncludedInCommit: ReadonlyArray<string>,
     filteredItems: Map<string, IChangesListItem>,
-    fileCount: number,
+    _fileCount: number,
     filters: IFileListFilterState
   ): boolean => {
     const visibleFileIds = new Set<string>()
 
     for (const [id, item] of filteredItems) {
-      visibleFileIds.add(item.change?.id ?? id)
+      if (item.section !== 'unstaged') {
+        visibleFileIds.add(item.change?.id ?? id)
+      }
     }
 
-    // All possible files are present in the list (no active filters or all files match active filters)
-    if (!hasActiveFilters(filters) || visibleFileIds.size === fileCount) {
+    if (!hasActiveFilters(filters)) {
       return false
     }
 

@@ -15,7 +15,15 @@ import { IAheadBehind } from '../../models/branch'
 import { assertNever } from '../../lib/fatal-error'
 import { isDotCom } from '../../lib/endpoint-capabilities'
 import { Owner } from '../../models/owner'
-import { SubmoduleEntry } from '../../models/submodule'
+import {
+  SubmoduleEntry,
+  SubmoduleWorkingTreeState,
+} from '../../models/submodule'
+import {
+  EmptyRepositoryFoldersState,
+  getRepositoryFolder,
+  IRepositoryFoldersState,
+} from '../../lib/repository-folders'
 
 export type RepositoryListGroup =
   | {
@@ -32,6 +40,10 @@ export type RepositoryListGroup =
   | {
       kind: 'submodules'
     }
+  | {
+      kind: 'folder'
+      name: string
+    }
 
 /**
  * Returns a unique grouping key (string) for a repository group. Doubles as a
@@ -43,14 +55,16 @@ export const getGroupKey = (group: RepositoryListGroup) => {
   switch (kind) {
     case 'recent':
       return `0:recent`
+    case 'folder':
+      return `1:folder:${group.name.toLowerCase()}:${group.name}`
     case 'dotcom':
-      return `1:dotcom:${group.owner.login}`
+      return `2:dotcom:${group.owner.login}`
     case 'enterprise':
-      return `2:enterprise:${group.host}`
+      return `3:enterprise:${group.host}`
     case 'other':
-      return `3:other`
+      return `4:other`
     case 'submodules':
-      return `4:submodules`
+      return `5:submodules`
     default:
       assertNever(group, `Unknown repository group kind ${kind}`)
   }
@@ -65,8 +79,10 @@ export interface IRepositoryListItem extends IFilterListItem {
   readonly aheadBehind: IAheadBehind | null
   readonly changedFilesCount: number
   readonly isSubmodule: boolean
+  readonly isInRepositoryFolder: boolean
   readonly submodulePath: string | null
   readonly submoduleDisplayName: string | null
+  readonly submoduleWorkingTreeState: SubmoduleWorkingTreeState | null
 }
 
 const recentRepositoriesThreshold = 7
@@ -76,8 +92,13 @@ const getHostForRepository = (repo: RepositoryWithGitHubRepository) =>
 
 const getGroupForRepository = (
   repo: Repositoryish,
-  isSubmodule: boolean
+  isSubmodule: boolean,
+  folder: string | null
 ): RepositoryListGroup => {
+  if (folder !== null) {
+    return { kind: 'folder', name: folder }
+  }
+
   if (isSubmodule) {
     return { kind: 'submodules' }
   }
@@ -92,6 +113,11 @@ const getGroupForRepository = (
 
 type RepoGroupItem = { group: RepositoryListGroup; repos: Repositoryish[] }
 
+const getPathKey = (path: string) => {
+  const normalizedPath = Path.resolve(path)
+  return __WIN32__ ? normalizedPath.toLowerCase() : normalizedPath
+}
+
 const isPathWithin = (path: string, parentPath: string) => {
   const relativePath = Path.relative(parentPath, path)
   return (
@@ -102,29 +128,116 @@ const isPathWithin = (path: string, parentPath: string) => {
   )
 }
 
-const getSubmoduleRepositoryIDs = (
-  repositories: ReadonlyArray<Repositoryish>
-) => {
+interface ISubmoduleRelationships {
+  readonly repositoryIDs: ReadonlySet<number>
+  readonly parents: ReadonlyMap<number, Repository>
+}
+
+const getSubmoduleRelationships = (
+  repositories: ReadonlyArray<Repositoryish>,
+  selectedRepository: Repository | null,
+  submodules: ReadonlyArray<SubmoduleEntry>
+): ISubmoduleRelationships => {
   const localRepositories = repositories.filter(
     (repository): repository is Repository => repository instanceof Repository
   )
-  const submoduleRepositoryIDs = new Set<number>()
+  const directSubmoduleParents = new Map<string, Repository>()
+
+  if (selectedRepository !== null) {
+    for (const submodule of submodules) {
+      directSubmoduleParents.set(
+        getPathKey(Path.join(selectedRepository.path, submodule.path)),
+        selectedRepository
+      )
+    }
+  }
+
+  const repositoryIDs = new Set<number>()
+  const parents = new Map<number, Repository>()
 
   for (const repository of localRepositories) {
+    const directParent = directSubmoduleParents.get(getPathKey(repository.path))
+
+    if (directParent !== undefined && directParent.id !== repository.id) {
+      repositoryIDs.add(repository.id)
+      parents.set(repository.id, directParent)
+      continue
+    }
+
+    let parent: Repository | null = null
+    let parentModulesPathLength = -1
+
     for (const possibleParent of localRepositories) {
-      if (repository.id === possibleParent.id) {
+      if (possibleParent.id === repository.id) {
         continue
       }
 
       const modulesPath = Path.join(possibleParent.resolvedGitDir, 'modules')
-      if (isPathWithin(repository.resolvedGitDir, modulesPath)) {
-        submoduleRepositoryIDs.add(repository.id)
-        break
+      if (
+        isPathWithin(repository.resolvedGitDir, modulesPath) &&
+        modulesPath.length > parentModulesPathLength
+      ) {
+        parent = possibleParent
+        parentModulesPathLength = modulesPath.length
       }
+    }
+
+    if (parent !== null) {
+      repositoryIDs.add(repository.id)
+      parents.set(repository.id, parent)
+      continue
+    }
+
+    const gitDirParts = Path.normalize(repository.resolvedGitDir)
+      .split(Path.sep)
+      .map(part => part.toLowerCase())
+    const usesModulesGitDir = gitDirParts.some(
+      (part, index) => part === '.git' && gitDirParts[index + 1] === 'modules'
+    )
+
+    if (usesModulesGitDir) {
+      repositoryIDs.add(repository.id)
     }
   }
 
-  return submoduleRepositoryIDs
+  return { repositoryIDs, parents }
+}
+
+const getEffectiveRepositoryFolders = (
+  repositories: ReadonlyArray<Repositoryish>,
+  repositoryFolders: IRepositoryFoldersState,
+  submoduleParents: ReadonlyMap<number, Repository>
+) => {
+  const effectiveFolders = new Map<number, string | null>()
+  const resolving = new Set<number>()
+
+  const resolveFolder = (repository: Repository): string | null => {
+    if (effectiveFolders.has(repository.id)) {
+      return effectiveFolders.get(repository.id) ?? null
+    }
+
+    if (resolving.has(repository.id)) {
+      return null
+    }
+
+    resolving.add(repository.id)
+    const parent = submoduleParents.get(repository.id)
+    const folder =
+      parent === undefined
+        ? getRepositoryFolder(repositoryFolders, repository)
+        : resolveFolder(parent)
+    resolving.delete(repository.id)
+    effectiveFolders.set(repository.id, folder)
+    return folder
+  }
+
+  for (const repository of repositories) {
+    if (repository instanceof Repository) {
+      resolveFolder(repository)
+    }
+  }
+
+  return effectiveFolders
 }
 
 export function groupRepositories(
@@ -132,12 +245,22 @@ export function groupRepositories(
   localRepositoryStateLookup: ReadonlyMap<number, ILocalRepositoryState>,
   recentRepositories: ReadonlyArray<number>,
   selectedRepository: Repository | null = null,
-  submodules: ReadonlyArray<SubmoduleEntry> = []
+  submodules: ReadonlyArray<SubmoduleEntry> = [],
+  repositoryFolders: IRepositoryFoldersState = EmptyRepositoryFoldersState
 ): ReadonlyArray<IFilterListGroup<IRepositoryListItem, RepositoryListGroup>> {
   const includeRecentGroup = repositories.length > recentRepositoriesThreshold
   const recentSet = includeRecentGroup ? new Set(recentRepositories) : undefined
   const groups = new Map<string, RepoGroupItem>()
-  const submoduleRepositoryIDs = getSubmoduleRepositoryIDs(repositories)
+  const submoduleRelationships = getSubmoduleRelationships(
+    repositories,
+    selectedRepository,
+    submodules
+  )
+  const effectiveFolders = getEffectiveRepositoryFolders(
+    repositories,
+    repositoryFolders,
+    submoduleRelationships.parents
+  )
 
   const addToGroup = (group: RepositoryListGroup, repo: Repositoryish) => {
     const key = getGroupKey(group)
@@ -150,6 +273,11 @@ export function groupRepositories(
     rg.repos.push(repo)
   }
 
+  for (const folder of repositoryFolders.folders) {
+    const group = { kind: 'folder' as const, name: folder }
+    groups.set(getGroupKey(group), { group, repos: [] })
+  }
+
   for (const repo of repositories) {
     if (recentSet?.has(repo.id) && repo instanceof Repository) {
       addToGroup({ kind: 'recent' }, repo)
@@ -158,7 +286,11 @@ export function groupRepositories(
     addToGroup(
       getGroupForRepository(
         repo,
-        repo instanceof Repository && submoduleRepositoryIDs.has(repo.id)
+        repo instanceof Repository &&
+          submoduleRelationships.repositoryIDs.has(repo.id),
+        repo instanceof Repository
+          ? effectiveFolders.get(repo.id) ?? null
+          : null
       ),
       repo
     )
@@ -166,57 +298,87 @@ export function groupRepositories(
 
   const repositoryGroups = Array.from(groups)
     .sort(([xKey], [yKey]) => compare(xKey, yKey))
-    .map(([, { group, repos }]) => ({
-      identifier: group,
-      items: toSortedListItems(
-        group,
-        repos,
-        localRepositoryStateLookup,
-        groups,
-        submoduleRepositoryIDs
-      ),
-    }))
+    .map(([, { group, repos }]) => {
+      const isCollapsedFolder =
+        group.kind === 'folder' &&
+        repositoryFolders.collapsedFolders.includes(group.name)
 
+      return {
+        identifier: group,
+        showWhenEmpty: group.kind === 'folder',
+        items: isCollapsedFolder
+          ? []
+          : toSortedListItems(
+              group,
+              repos,
+              localRepositoryStateLookup,
+              groups,
+              submoduleRelationships.repositoryIDs
+            ),
+      }
+    })
+
+  const selectedRepositoryFolder =
+    selectedRepository === null
+      ? null
+      : effectiveFolders.get(selectedRepository.id) ?? null
   const directSubmoduleItems = createDirectSubmoduleListItems(
     repositories,
     selectedRepository,
-    submodules
+    submodules,
+    selectedRepositoryFolder !== null
   )
 
   if (directSubmoduleItems.length === 0) {
     return repositoryGroups
   }
 
-  const submoduleGroup = repositoryGroups.find(
-    group => group.identifier.kind === 'submodules'
-  )
+  const directSubmoduleGroup: RepositoryListGroup =
+    selectedRepositoryFolder === null
+      ? { kind: 'submodules' }
+      : { kind: 'folder', name: selectedRepositoryFolder }
+  const isCollapsedFolder =
+    directSubmoduleGroup.kind === 'folder' &&
+    repositoryFolders.collapsedFolders.includes(directSubmoduleGroup.name)
 
-  if (submoduleGroup === undefined) {
-    return [
-      ...repositoryGroups,
-      {
-        identifier: { kind: 'submodules' },
-        items: directSubmoduleItems,
-      },
-    ]
+  if (isCollapsedFolder) {
+    return repositoryGroups
   }
 
-  return repositoryGroups.map(group =>
-    group === submoduleGroup
-      ? {
-          ...group,
-          items: [...group.items, ...directSubmoduleItems].sort((x, y) =>
-            caseInsensitiveCompare(x.text[0], y.text[0])
-          ),
-        }
-      : group
+  const existingGroup = repositoryGroups.find(
+    group => getGroupKey(group.identifier) === getGroupKey(directSubmoduleGroup)
+  )
+
+  if (existingGroup !== undefined) {
+    return repositoryGroups.map(group =>
+      group === existingGroup
+        ? {
+            ...group,
+            items: sortRepositoryListItems(
+              [...group.items, ...directSubmoduleItems],
+              directSubmoduleGroup
+            ),
+          }
+        : group
+    )
+  }
+
+  return [
+    ...repositoryGroups,
+    {
+      identifier: directSubmoduleGroup,
+      items: directSubmoduleItems,
+    },
+  ].sort((x, y) =>
+    compare(getGroupKey(x.identifier), getGroupKey(y.identifier))
   )
 }
 
 const createDirectSubmoduleListItems = (
   repositories: ReadonlyArray<Repositoryish>,
   selectedRepository: Repository | null,
-  submodules: ReadonlyArray<SubmoduleEntry>
+  submodules: ReadonlyArray<SubmoduleEntry>,
+  isInRepositoryFolder: boolean
 ): ReadonlyArray<IRepositoryListItem> => {
   if (selectedRepository === null || submodules.length === 0) {
     return []
@@ -228,7 +390,7 @@ const createDirectSubmoduleListItems = (
         (repository): repository is Repository =>
           repository instanceof Repository
       )
-      .map(repository => Path.resolve(repository.path))
+      .map(repository => getPathKey(repository.path))
   )
 
   return submodules
@@ -236,7 +398,7 @@ const createDirectSubmoduleListItems = (
       submodule,
       fullPath: Path.resolve(selectedRepository.path, submodule.path),
     }))
-    .filter(({ fullPath }) => !registeredPaths.has(fullPath))
+    .filter(({ fullPath }) => !registeredPaths.has(getPathKey(fullPath)))
     .map(({ submodule, fullPath }) => ({
       text: [submodule.path, submodule.sha, submodule.describe, 'submodule'],
       id: `submodule:${fullPath}`,
@@ -245,8 +407,10 @@ const createDirectSubmoduleListItems = (
       aheadBehind: null,
       changedFilesCount: 0,
       isSubmodule: true,
+      isInRepositoryFolder,
       submodulePath: fullPath,
       submoduleDisplayName: submodule.path,
+      submoduleWorkingTreeState: submodule.workingTreeState,
     }))
     .sort((x, y) =>
       caseInsensitiveCompare(x.submoduleDisplayName, y.submoduleDisplayName)
@@ -257,6 +421,18 @@ const createDirectSubmoduleListItems = (
 // (if available) or the name.
 const getDisplayTitle = (r: Repositoryish) =>
   r instanceof Repository && r.alias != null ? r.alias : r.name
+
+const sortRepositoryListItems = (
+  items: ReadonlyArray<IRepositoryListItem>,
+  group: RepositoryListGroup
+) =>
+  items.slice().sort((x, y) => {
+    if (group.kind === 'folder' && x.isSubmodule !== y.isSubmodule) {
+      return x.isSubmodule ? 1 : -1
+    }
+
+    return caseInsensitiveCompare(x.text[0], y.text[0])
+  })
 
 const toSortedListItems = (
   group: RepositoryListGroup,
@@ -283,8 +459,8 @@ const toSortedListItems = (
     }
   }
 
-  return repositories
-    .map(r => {
+  return sortRepositoryListItems(
+    repositories.map(r => {
       const repoState = localRepositoryStateLookup.get(r.id)
       const title = getDisplayTitle(r)
       const isSubmodule =
@@ -309,11 +485,12 @@ const toSortedListItems = (
         aheadBehind: repoState?.aheadBehind ?? null,
         changedFilesCount: repoState?.changedFilesCount ?? 0,
         isSubmodule,
+        isInRepositoryFolder: group.kind === 'folder',
         submodulePath: null,
         submoduleDisplayName: null,
+        submoduleWorkingTreeState: null,
       }
-    })
-    .sort(({ repository: x }, { repository: y }) =>
-      caseInsensitiveCompare(getDisplayTitle(x), getDisplayTitle(y))
-    )
+    }),
+    group
+  )
 }

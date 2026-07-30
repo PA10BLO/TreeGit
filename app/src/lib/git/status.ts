@@ -9,6 +9,7 @@ import {
   UnmergedEntry,
   ConflictedFileStatus,
   UnmergedEntrySummary,
+  SubmoduleStatus,
 } from '../../models/status'
 import {
   parsePorcelainStatus,
@@ -179,6 +180,105 @@ function convertToAppStatus(
   return fatalError(`Unknown file status ${status}`)
 }
 
+function convertGitStatusToAppStatus(
+  entry: FileEntry,
+  gitStatus: GitStatusEntry | undefined,
+  section: 'staged' | 'unstaged',
+  oldPath?: string
+): AppFileStatus | null {
+  if (gitStatus === undefined || gitStatus === GitStatusEntry.Unchanged) {
+    return null
+  }
+
+  const submoduleStatus = getSectionSubmoduleStatus(entry, section)
+
+  switch (gitStatus) {
+    case GitStatusEntry.Added:
+      return { kind: AppFileStatusKind.New, submoduleStatus }
+    case GitStatusEntry.Deleted:
+      return { kind: AppFileStatusKind.Deleted, submoduleStatus }
+    case GitStatusEntry.Renamed:
+      return oldPath === undefined
+        ? { kind: AppFileStatusKind.Modified, submoduleStatus }
+        : {
+            kind: AppFileStatusKind.Renamed,
+            oldPath,
+            renameIncludesModifications:
+              entry.kind === 'renamed' &&
+              entry.renameOrCopyScore !== undefined &&
+              entry.renameOrCopyScore < 100,
+            submoduleStatus,
+          }
+    case GitStatusEntry.Copied:
+      return oldPath === undefined
+        ? { kind: AppFileStatusKind.Modified, submoduleStatus }
+        : {
+            kind: AppFileStatusKind.Copied,
+            oldPath,
+            renameIncludesModifications: false,
+            submoduleStatus,
+          }
+    case GitStatusEntry.Untracked:
+      return { kind: AppFileStatusKind.Untracked, submoduleStatus }
+    default:
+      return { kind: AppFileStatusKind.Modified, submoduleStatus }
+  }
+}
+
+function getSectionSubmoduleStatus(
+  entry: FileEntry,
+  section: 'staged' | 'unstaged'
+): SubmoduleStatus | undefined {
+  if (entry.submoduleStatus === undefined) {
+    return undefined
+  }
+
+  if (section === 'unstaged') {
+    return entry.submoduleStatus
+  }
+
+  return {
+    commitChanged:
+      'index' in entry &&
+      entry.index !== undefined &&
+      entry.index !== GitStatusEntry.Unchanged,
+    modifiedChanges: false,
+    untrackedChanges: false,
+  }
+}
+
+function getSectionStatuses(
+  appStatus: AppFileStatus,
+  status: FileEntry,
+  oldPath?: string
+): {
+  readonly stagedStatus: AppFileStatus | null
+  readonly unstagedStatus: AppFileStatus | null
+} {
+  if (status.kind === 'untracked') {
+    return { stagedStatus: null, unstagedStatus: appStatus }
+  }
+
+  if (status.kind === 'conflicted') {
+    return { stagedStatus: null, unstagedStatus: appStatus }
+  }
+
+  return {
+    stagedStatus: convertGitStatusToAppStatus(
+      status,
+      status.index,
+      'staged',
+      oldPath
+    ),
+    unstagedStatus: convertGitStatusToAppStatus(
+      status,
+      status.workingTree,
+      'unstaged',
+      oldPath
+    ),
+  }
+}
+
 // List of known conflicted index entries for a file, extracted from mapStatus
 // inside `app/src/lib/status-parser.ts` for convenience
 const conflictStatusCodes = ['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']
@@ -305,24 +405,12 @@ function buildStatusMap(
     entry.renameOrCopyScore
   )
 
-  if (status.kind === 'ordinary') {
-    // when a file is added in the index but then removed in the working
-    // directory, the file won't be part of the commit, so we can skip
-    // displaying this entry in the changes list
-    if (
-      status.index === GitStatusEntry.Added &&
-      status.workingTree === GitStatusEntry.Deleted
-    ) {
-      return files
-    }
-  }
-
-  if (status.kind === 'untracked') {
-    // when a delete has been staged, but an untracked file exists with the
-    // same path, we should ensure that we only draw one entry in the
-    // changes list - see if an entry already exists for this path and
-    // remove it if found
-    files.delete(entry.path)
+  if (
+    status.kind === 'ordinary' &&
+    status.index === GitStatusEntry.Added &&
+    status.workingTree === GitStatusEntry.Deleted
+  ) {
+    return files
   }
 
   // for now we just poke at the existing summary
@@ -332,6 +420,12 @@ function buildStatusMap(
     conflictDetails,
     entry.oldPath
   )
+  const sectionStatuses = getSectionStatuses(appStatus, status, entry.oldPath)
+  const existingFile = files.get(entry.path)
+  const stagedStatus =
+    sectionStatuses.stagedStatus ?? existingFile?.stagedStatus ?? null
+  const unstagedStatus =
+    sectionStatuses.unstagedStatus ?? existingFile?.unstagedStatus ?? null
 
   const initialSelectionType =
     appStatus.kind === AppFileStatusKind.Modified &&
@@ -344,7 +438,13 @@ function buildStatusMap(
 
   files.set(
     entry.path,
-    new WorkingDirectoryFileChange(entry.path, appStatus, selection)
+    new WorkingDirectoryFileChange(
+      entry.path,
+      appStatus,
+      selection,
+      stagedStatus,
+      unstagedStatus
+    )
   )
   return files
 }
