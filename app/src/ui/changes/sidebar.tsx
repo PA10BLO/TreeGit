@@ -1,7 +1,7 @@
 import * as Path from 'path'
 import * as React from 'react'
 
-import { DiffSelectionType } from '../../models/diff'
+import { DiffSelectionType, WorkingDirectoryDiffKind } from '../../models/diff'
 import {
   IChangesState,
   RebaseConflictState,
@@ -31,7 +31,7 @@ import { isConflictedFile, hasUnresolvedConflicts } from '../../lib/status'
 import { getAccountForRepository } from '../../lib/get-account-for-repository'
 import { IAheadBehind } from '../../models/branch'
 import { Emoji } from '../../lib/emoji'
-import { FilterChangesList } from './filter-changes-list'
+import { ChangesListScrollKind, FilterChangesList } from './filter-changes-list'
 import { HookProgress } from '../../lib/git'
 
 /**
@@ -81,8 +81,13 @@ interface IChangesSidebarProps {
    */
   readonly onOpenInExternalEditor: (fullPath: string) => void
   readonly onOpenSubmodule: (fullPath: string) => void
-  readonly onChangesListScrolled: (scrollTop: number) => void
+  readonly onChangesListScrolled: (
+    scrollTop: number,
+    kind: ChangesListScrollKind
+  ) => void
   readonly changesListScrollTop?: number
+  readonly stagedChangesListScrollTop?: number
+  readonly unstagedChangesListScrollTop?: number
 
   /**
    * Whether we should show the onboarding tutorial nudge
@@ -160,11 +165,17 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
   private onCreateCommit = async (
     context: ICommitContext
   ): Promise<boolean> => {
-    const { workingDirectory } = this.props.changes
+    const { workingDirectory, isUsingStagingWorkflow } = this.props.changes
+    const isIncludedInCommit = (file: WorkingDirectoryFileChange) =>
+      isUsingStagingWorkflow
+        ? file.hasStagedChanges
+        : file.selection.getSelectionType() !== DiffSelectionType.None
 
     const overSizedFiles = await getLargeFilePaths(
       this.props.repository,
-      workingDirectory
+      workingDirectory,
+      isIncludedInCommit,
+      isUsingStagingWorkflow ? 'index' : 'working-directory'
     )
 
     const filesIgnoredByLFS = await filesNotTrackedByLFS(
@@ -185,9 +196,7 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
 
     // are any conflicted files left?
     const conflictedFilesLeft = workingDirectory.files.filter(
-      f =>
-        isConflictedFile(f.status) &&
-        f.selection.getSelectionType() === DiffSelectionType.None
+      f => isConflictedFile(f.status) && !isIncludedInCommit(f)
     )
 
     if (conflictedFilesLeft.length === 0) {
@@ -202,7 +211,7 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
       f =>
         isConflictedFile(f.status) &&
         hasUnresolvedConflicts(f.status) &&
-        f.selection.getSelectionType() !== DiffSelectionType.None
+        isIncludedInCommit(f)
     )
 
     if (conflictedFilesSelected.length > 0) {
@@ -221,11 +230,15 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
     )
   }
 
-  private onFileSelectionChanged = (rows: ReadonlyArray<number>) => {
+  private onFileSelectionChanged = (
+    rows: ReadonlyArray<number>,
+    diffKind: WorkingDirectoryDiffKind
+  ) => {
     const files = rows.map(i => this.props.changes.workingDirectory.files[i])
     this.props.dispatcher.selectWorkingDirectoryFiles(
       this.props.repository,
-      files
+      files,
+      diffKind
     )
   }
 
@@ -428,6 +441,9 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
           repositoryAccount={repositoryAccount}
           workingDirectory={workingDirectory}
           submodules={this.props.changes.submodules ?? []}
+          isUsingStagingWorkflow={
+            this.props.changes.isUsingStagingWorkflow ?? true
+          }
           conflictState={conflictState}
           mostRecentLocalCommit={this.props.mostRecentLocalCommit}
           rebaseConflictState={rebaseConflictState}
@@ -470,6 +486,8 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
           onOpenItemInExternalEditor={this.onOpenItemInExternalEditor}
           onChangesListScrolled={this.props.onChangesListScrolled}
           changesListScrollTop={this.props.changesListScrollTop}
+          stagedChangesListScrollTop={this.props.stagedChangesListScrollTop}
+          unstagedChangesListScrollTop={this.props.unstagedChangesListScrollTop}
           stashEntry={this.props.changes.stashEntry}
           isShowingStashEntry={isShowingStashEntry}
           currentBranchProtected={currentBranchProtected}

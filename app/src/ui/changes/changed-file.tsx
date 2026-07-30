@@ -2,10 +2,9 @@ import * as React from 'react'
 
 import { PathLabel } from '../lib/path-label'
 import { Octicon, iconForStatus } from '../octicons'
-import * as octicons from '../octicons/octicons.generated'
 import { Checkbox, CheckboxValue } from '../lib/checkbox'
 import { mapStatus } from '../../lib/status'
-import { WorkingDirectoryFileChange } from '../../models/status'
+import { AppFileStatus, WorkingDirectoryFileChange } from '../../models/status'
 import { TooltipDirection } from '../lib/tooltip'
 import { TooltippedContent } from '../lib/tooltipped-content'
 import { AriaLiveContainer } from '../accessibility/aria-live-container'
@@ -13,6 +12,7 @@ import { IMatches } from '../../lib/fuzzy-find'
 
 interface IChangedFileProps {
   readonly file: WorkingDirectoryFileChange
+  readonly status?: AppFileStatus
   readonly include: boolean | null
   readonly availableWidth: number
   readonly disableSelection: boolean
@@ -52,22 +52,21 @@ export class ChangedFile extends React.Component<IChangedFileProps, {}> {
       focused,
       matches,
     } = this.props
-    const { status, path } = file
+    const { path } = file
+    const status = this.props.status ?? file.status
     const fileStatus = mapStatus(status)
 
     const listItemPadding = 10 * 2
     const checkboxWidth = 20
     const statusWidth = 16
     const filePadding = 5
-    const actionsWidth = 20
 
     const availablePathWidth =
       availableWidth -
       listItemPadding -
       checkboxWidth -
       filePadding -
-      statusWidth -
-      actionsWidth
+      statusWidth
 
     const includedText =
       this.props.include === true
@@ -118,7 +117,6 @@ export class ChangedFile extends React.Component<IChangedFileProps, {}> {
             className={'status status-' + fileStatus.toLowerCase()}
           />
         </TooltippedContent>
-        <Octicon className="file-actions" symbol={octicons.kebabHorizontal} />
       </div>
     )
   }

@@ -6,6 +6,7 @@ import {
 } from '../lib/popover'
 import {
   countActiveFilterOptions,
+  getItemCommitState,
   hasActiveFilters,
 } from './filter-changes-logic'
 import { Octicon } from '../octicons'
@@ -16,12 +17,11 @@ import memoizeOne from 'memoize-one'
 import { Button } from '../lib/button'
 import classNames from 'classnames'
 import { IChangesListItem } from './filter-changes-list'
-import { WorkingDirectoryStatus } from '../../models/status'
+import { AppFileStatusKind } from '../../models/status'
 
 interface IChangesListFilterOptionsProps {
   readonly fileListFilter: IFileListFilterState
   readonly filteredItems: Map<string, IChangesListItem>
-  readonly workingDirectory: WorkingDirectoryStatus
   readonly onFilterToIncludedInCommit: () => void
   readonly onFilterExcludedFiles: () => void
   readonly onFilterDeletedFiles: () => void
@@ -54,39 +54,31 @@ export class ChangesListFilterOptions extends React.Component<
         excludedFilesCount: 0,
       }
 
-      const filesById = new Map(
-        Array.from(filteredItems.values()).map(item => [
-          item.change.id,
-          item.change,
-        ])
-      )
-
-      Array.from(filesById.values()).forEach(file => {
-        if (file) {
-          if (file.isNew() || file.isUntracked()) {
-            counts.newFilesCount++
-          }
-          if (file.isModified()) {
-            counts.modifiedFilesCount++
-          }
-          if (file.isDeleted()) {
-            counts.deletedFilesCount++
-          }
+      for (const item of filteredItems.values()) {
+        const status = item.status ?? item.change.status
+        if (
+          status.kind === AppFileStatusKind.New ||
+          status.kind === AppFileStatusKind.Untracked
+        ) {
+          counts.newFilesCount++
         }
-      })
+        if (status.kind === AppFileStatusKind.Modified) {
+          counts.modifiedFilesCount++
+        }
+        if (status.kind === AppFileStatusKind.Deleted) {
+          counts.deletedFilesCount++
+        }
 
-      Array.from(filteredItems.values()).forEach(item => {
-        const isStagedRow = item.section === 'staged'
-        const isUnstagedRow = item.section === 'unstaged'
-
-        if (isStagedRow || item.change.isIncludedInCommit()) {
+        const { isIncludedInCommit, isExcludedFromCommit } =
+          getItemCommitState(item)
+        if (isIncludedInCommit) {
           counts.includedFilesCount++
         }
 
-        if (isUnstagedRow || item.change.isExcludedFromCommit()) {
+        if (isExcludedFromCommit) {
           counts.excludedFilesCount++
         }
-      })
+      }
 
       return counts
     }

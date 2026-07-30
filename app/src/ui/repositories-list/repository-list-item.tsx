@@ -30,6 +30,9 @@ interface IRepositoryListItemProps {
 
   /** Whether the repository is checked out as a submodule of another repository in the list */
   readonly isSubmodule?: boolean
+
+  /** Whether the repository is rendered inside a user-defined repository folder */
+  readonly isInRepositoryFolder?: boolean
 }
 
 /** A repository item. */
@@ -61,6 +64,10 @@ export class RepositoryListItem extends React.Component<
       <div
         className={classNames('repository-list-item', {
           submodule: this.props.isSubmodule,
+          'repository-folder-root':
+            this.props.isInRepositoryFolder && !this.props.isSubmodule,
+          'repository-folder-submodule':
+            this.props.isInRepositoryFolder && this.props.isSubmodule,
         })}
         ref={this.listItemRef}
       >
@@ -123,7 +130,8 @@ export class RepositoryListItem extends React.Component<
       return (
         nextProps.repository.id !== this.props.repository.id ||
         nextProps.matches !== this.props.matches ||
-        nextProps.isSubmodule !== this.props.isSubmodule
+        nextProps.isSubmodule !== this.props.isSubmodule ||
+        nextProps.isInRepositoryFolder !== this.props.isInRepositoryFolder
       )
     } else {
       return true

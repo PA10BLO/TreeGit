@@ -145,6 +145,7 @@ import { CommitDragElement } from './drag-elements/commit-drag-element'
 import classNames from 'classnames'
 import { MoveToApplicationsFolder } from './move-to-applications-folder'
 import { ChangeRepositoryAlias } from './change-repository-alias/change-repository-alias-dialog'
+import { RepositoryFolderDialog } from './repository-folder/repository-folder-dialog'
 import { ThankYou } from './thank-you'
 import {
   getUserContributions,
@@ -2358,6 +2359,17 @@ export class App extends React.Component<IAppProps, IAppState> {
           <ChangeRepositoryAlias
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      }
+      case PopupType.RepositoryFolder: {
+        return (
+          <RepositoryFolderDialog
+            initialName={popup.initialName}
+            existingNames={popup.existingNames}
+            repositoryName={popup.repositoryName}
+            onSubmit={popup.onSubmit}
             onDismissed={onPopupDismissedFn}
           />
         )

@@ -8,9 +8,10 @@ import { encodePathAsUrl } from '../../lib/path'
 import {
   WorkingDirectoryStatus,
   WorkingDirectoryFileChange,
+  AppFileStatus,
   AppFileStatusKind,
 } from '../../models/status'
-import { DiffSelectionType } from '../../models/diff'
+import { DiffSelectionType, WorkingDirectoryDiffKind } from '../../models/diff'
 import { CommitIdentity } from '../../models/commit-identity'
 import { ICommitMessage } from '../../models/commit-message'
 import {
@@ -51,7 +52,7 @@ import * as octicons from '../octicons/octicons.generated'
 import { IStashEntry } from '../../models/stash-entry'
 import classNames from 'classnames'
 import { hasWritePermission } from '../../models/github-repository'
-import { hasConflictedFiles } from '../../lib/status'
+import { hasConflictedFiles, hasUnresolvedConflicts } from '../../lib/status'
 import { createObservableRef } from '../lib/observable-ref'
 import { Popup, PopupType } from '../../models/popup'
 import { EOL } from 'os'
@@ -76,11 +77,13 @@ import {
 import { ChangesListFilterOptions } from './changes-list-filter-options'
 import { HookProgress } from '../../lib/git'
 import { formatNumber } from '../../lib/format-number'
+import { SubmodulesList } from './submodules-list'
 
 export interface IChangesListItem extends IFilterListItem {
   readonly id: string
   readonly text: ReadonlyArray<string>
   readonly change: WorkingDirectoryFileChange
+  readonly status?: AppFileStatus
   readonly section?: ChangeFileListSection
 }
 
@@ -97,19 +100,15 @@ enum ChangesListViewMode {
   Submodules = 'submodules',
 }
 
-type ChangesListLayoutMode =
-  | ChangesListViewMode.Classic
-  | ChangesListViewMode.Tree
-
 export enum ChangeFileListSection {
   Staged = 'staged',
   Unstaged = 'unstaged',
 }
 
-type ChangeFileListGroupMetadata = {
-  readonly section: ChangeFileListSection
-  readonly fileCount: number
-}
+export type ChangesListScrollKind =
+  | 'classic'
+  | ChangeFileListSection.Staged
+  | ChangeFileListSection.Unstaged
 
 const ChangeFileListSectionLabels: Record<ChangeFileListSection, string> = {
   [ChangeFileListSection.Staged]: 'Staged files',
@@ -124,17 +123,17 @@ const ChangeFileListSectionOrder: ReadonlyArray<ChangeFileListSection> = [
 function getChangeFileListSections(
   file: WorkingDirectoryFileChange
 ): ReadonlyArray<ChangeFileListSection> {
-  const selection = file.selection.getSelectionType()
+  const sections = new Array<ChangeFileListSection>()
 
-  if (selection === DiffSelectionType.All) {
-    return [ChangeFileListSection.Staged]
+  if (file.hasStagedChanges) {
+    sections.push(ChangeFileListSection.Staged)
   }
 
-  if (selection === DiffSelectionType.None) {
-    return [ChangeFileListSection.Unstaged]
+  if (file.hasUnstagedChanges) {
+    sections.push(ChangeFileListSection.Unstaged)
   }
 
-  return [ChangeFileListSection.Staged, ChangeFileListSection.Unstaged]
+  return sections
 }
 
 function getChangeFileListItemId(
@@ -151,6 +150,7 @@ function createClassicChangeFileListItem(
     text: [file.path, file.status.kind.toString()],
     id: file.id,
     change: file,
+    status: file.status,
   }
 }
 
@@ -158,14 +158,24 @@ function createChangeFileListItem(
   file: WorkingDirectoryFileChange,
   section: ChangeFileListSection
 ): IChangesListItem {
+  const status =
+    section === ChangeFileListSection.Staged
+      ? file.stagedStatus
+      : file.unstagedStatus
+
+  if (status === null) {
+    throw new Error(`Missing ${section} status for ${file.path}`)
+  }
+
   return {
     text: [
       file.path,
-      file.status.kind.toString(),
+      status.kind.toString(),
       ChangeFileListSectionLabels[section],
     ],
     id: getChangeFileListItemId(file, section),
     change: file,
+    status,
     section,
   }
 }
@@ -245,6 +255,7 @@ interface IFilterChangesListProps {
   readonly repositoryAccount: Account | null
   readonly workingDirectory: WorkingDirectoryStatus
   readonly submodules: ReadonlyArray<SubmoduleEntry>
+  readonly isUsingStagingWorkflow: boolean
   readonly mostRecentLocalCommit: Commit | null
   /**
    * An object containing the conflicts in the working directory.
@@ -253,7 +264,10 @@ interface IFilterChangesListProps {
   readonly conflictState: ConflictState | null
   readonly rebaseConflictState: RebaseConflictState | null
   readonly selectedFileIDs: ReadonlyArray<string>
-  readonly onFileSelectionChanged: (rows: ReadonlyArray<number>) => void
+  readonly onFileSelectionChanged: (
+    rows: ReadonlyArray<number>,
+    diffKind: WorkingDirectoryDiffKind
+  ) => void
   readonly onIncludeChanged: (
     file:
       | WorkingDirectoryFileChange
@@ -273,10 +287,15 @@ interface IFilterChangesListProps {
   ) => void
 
   /** Callback that fires on page scroll to pass the new scrollTop location */
-  readonly onChangesListScrolled: (scrollTop: number) => void
+  readonly onChangesListScrolled: (
+    scrollTop: number,
+    kind: ChangesListScrollKind
+  ) => void
 
   /* The scrollTop of the compareList. It is stored to allow for scroll position persistence */
   readonly changesListScrollTop?: number
+  readonly stagedChangesListScrollTop?: number
+  readonly unstagedChangesListScrollTop?: number
 
   /**
    * Called to open a file in its default application
@@ -399,8 +418,9 @@ interface IFilterChangesListState {
   readonly focusedRow: string | null
   readonly groups: ReadonlyArray<IFilterListGroup<IChangesListItem>>
   readonly viewMode: ChangesListViewMode
-  readonly changesLayoutMode: ChangesListLayoutMode
   readonly treeSplitRatio: number
+  readonly isChangingStagingWorkflow: boolean
+  readonly isChangingStagedFiles: boolean
 }
 
 function getSelectedItemsFromProps(
@@ -464,12 +484,7 @@ export class FilterChangesList extends React.Component<
   IFilterChangesListProps,
   IFilterChangesListState
 > {
-  private groupMetadata = new Map<string, ChangeFileListGroupMetadata>()
   private lastSelectedItems: ReadonlyArray<IChangesListItem> = []
-  private filteredTreeItemsBySection = new Map<
-    ChangeFileListSection,
-    Map<string, IChangesListItem>
-  >()
   private filterTextBox: TextBox | undefined = undefined
   private headerRef = createObservableRef<HTMLDivElement>()
   private splitViewRef = React.createRef<HTMLDivElement>()
@@ -481,6 +496,9 @@ export class FilterChangesList extends React.Component<
     React.createRef<AugmentedSectionFilterList<IChangesListItem>>()
   private unstagedFilterListRef =
     React.createRef<AugmentedSectionFilterList<IChangesListItem>>()
+  private stagedScrollTop = 0
+  private unstagedScrollTop = 0
+  private isMounted = false
 
   /** Compute the 'Include All' checkbox value */
   private getCheckAllValue = memoizeOne(
@@ -530,6 +548,35 @@ export class FilterChangesList extends React.Component<
     }
   )
 
+  public constructor(props: IFilterChangesListProps) {
+    super(props)
+
+    const viewMode = props.isUsingStagingWorkflow
+      ? ChangesListViewMode.Tree
+      : ChangesListViewMode.Classic
+    const groups = this.createListGroups(props.workingDirectory.files, viewMode)
+    const selectedItems = getSelectedItemsFromProps(props, [], viewMode)
+    this.lastSelectedItems = selectedItems
+    this.stagedScrollTop = props.stagedChangesListScrollTop ?? 0
+    this.unstagedScrollTop = props.unstagedChangesListScrollTop ?? 0
+
+    this.state = {
+      filteredItems: this.createFilteredItemsMapForGroups(groups, props),
+      selectedItems,
+      focusedRow: null,
+      groups,
+      viewMode,
+      treeSplitRatio: DefaultTreeSplitRatio,
+      isChangingStagingWorkflow: false,
+      isChangingStagedFiles: false,
+    }
+  }
+
+  public componentDidMount() {
+    this.isMounted = true
+    this.notifyFileSelectionChanged(this.state.selectedItems)
+  }
+
   private createFilteredItemsMapForGroups(
     groups: ReadonlyArray<IFilterListGroup<IChangesListItem>>,
     props: IFilterChangesListProps = this.props
@@ -550,56 +597,76 @@ export class FilterChangesList extends React.Component<
     return createFilteredItemsMapFromGroups(groups, filterText, filterMethod)
   }
 
-  public constructor(props: IFilterChangesListProps) {
-    super(props)
-
-    const viewMode = ChangesListViewMode.Tree
-    const groups = this.createListGroups(props.workingDirectory.files, viewMode)
-    const selectedItems = getSelectedItemsFromProps(props, [], viewMode)
-    this.lastSelectedItems = selectedItems
-
-    this.state = {
-      filteredItems: this.createFilteredItemsMapForGroups(groups, props),
-      selectedItems,
-      focusedRow: null,
-      groups,
-      viewMode,
-      changesLayoutMode: viewMode,
-      treeSplitRatio: DefaultTreeSplitRatio,
-    }
-  }
-
   public componentWillUnmount() {
+    this.isMounted = false
     this.stopTreeSectionResize()
   }
 
   public componentWillReceiveProps(nextProps: IFilterChangesListProps) {
-    // No need to update state unless we haven't done it yet or the
-    // selected file id list has changed.
-    if (
+    if (nextProps.repository.id !== this.props.repository.id) {
+      this.stagedScrollTop = nextProps.stagedChangesListScrollTop ?? 0
+      this.unstagedScrollTop = nextProps.unstagedChangesListScrollTop ?? 0
+    } else {
+      if (
+        nextProps.stagedChangesListScrollTop !== undefined &&
+        nextProps.stagedChangesListScrollTop !==
+          this.props.stagedChangesListScrollTop
+      ) {
+        this.stagedScrollTop = nextProps.stagedChangesListScrollTop
+      }
+
+      if (
+        nextProps.unstagedChangesListScrollTop !== undefined &&
+        nextProps.unstagedChangesListScrollTop !==
+          this.props.unstagedChangesListScrollTop
+      ) {
+        this.unstagedScrollTop = nextProps.unstagedChangesListScrollTop
+      }
+    }
+
+    const nextLayoutMode = nextProps.isUsingStagingWorkflow
+      ? ChangesListViewMode.Tree
+      : ChangesListViewMode.Classic
+    const layoutModeChanged =
+      nextProps.isUsingStagingWorkflow !== this.props.isUsingStagingWorkflow
+    const nextViewMode =
+      layoutModeChanged &&
+      this.state.viewMode !== ChangesListViewMode.Submodules
+        ? nextLayoutMode
+        : this.state.viewMode
+    const listChanged =
+      layoutModeChanged ||
       !arrayEquals(nextProps.selectedFileIDs, this.props.selectedFileIDs) ||
       !arrayEquals(nextProps.submodules, this.props.submodules) ||
       !arrayEquals(
         nextProps.workingDirectory.files,
         this.props.workingDirectory.files
       )
-    ) {
-      const selectedItems = getSelectedItemsFromProps(
-        nextProps,
-        this.lastSelectedItems,
-        this.state.viewMode
-      )
-      const groups = this.createListGroups(
-        nextProps.workingDirectory.files,
-        this.state.viewMode
-      )
-      this.lastSelectedItems = selectedItems
-      this.filteredTreeItemsBySection.clear()
+    const filterChanged =
+      nextProps.showChangesFilter !== this.props.showChangesFilter ||
+      nextProps.fileListFilter !== this.props.fileListFilter
+
+    if (listChanged || filterChanged) {
+      const selectedItems = listChanged
+        ? getSelectedItemsFromProps(
+            nextProps,
+            this.lastSelectedItems,
+            nextViewMode
+          )
+        : this.state.selectedItems
+      const groups = listChanged
+        ? this.createListGroups(nextProps.workingDirectory.files, nextViewMode)
+        : this.state.groups
+
+      if (listChanged) {
+        this.lastSelectedItems = selectedItems
+      }
 
       this.setState({
         selectedItems,
         groups,
         filteredItems: this.createFilteredItemsMapForGroups(groups, nextProps),
+        viewMode: nextViewMode,
       })
     }
   }
@@ -609,7 +676,6 @@ export class FilterChangesList extends React.Component<
     viewMode: ChangesListViewMode
   ): ReadonlyArray<IFilterListGroup<IChangesListItem>> {
     if (viewMode === ChangesListViewMode.Classic) {
-      this.groupMetadata = new Map()
       return [
         {
           identifier: ClassicChangeListGroupIdentifier,
@@ -620,7 +686,6 @@ export class FilterChangesList extends React.Component<
     }
 
     const groups = new Map<ChangeFileListSection, IChangesListItem[]>()
-    const groupMetadata = new Map<string, ChangeFileListGroupMetadata>()
 
     ChangeFileListSectionOrder.forEach(section => groups.set(section, []))
 
@@ -635,15 +700,6 @@ export class FilterChangesList extends React.Component<
         groupItems.push(createChangeFileListItem(file, section))
       }
     }
-
-    for (const [section, groupItems] of groups) {
-      groupMetadata.set(section, {
-        section,
-        fileCount: groupItems.length,
-      })
-    }
-
-    this.groupMetadata = groupMetadata
 
     return Array.from(groups, ([identifier, items]) => ({
       identifier,
@@ -666,12 +722,9 @@ export class FilterChangesList extends React.Component<
     return this.state.groups.find(g => g.identifier === section)
   }
 
-  private getSectionItems(section: ChangeFileListSection) {
-    return this.getSectionGroup(section)?.items ?? []
-  }
-
   private getSectionChanges(
-    section: ChangeFileListSection
+    section: ChangeFileListSection,
+    filtered: boolean = false
   ): ReadonlyArray<WorkingDirectoryFileChange> {
     const group = this.getSectionGroup(section)
 
@@ -679,12 +732,64 @@ export class FilterChangesList extends React.Component<
       return []
     }
 
-    return this.getUniqueChanges(group.items)
+    const items = filtered
+      ? group.items.filter(item => this.state.filteredItems.has(item.id))
+      : group.items
+
+    return this.getUniqueChanges(items)
   }
 
-  private onChangesViewModeChanged = (viewMode: ChangesListViewMode) => {
-    if (viewMode === this.state.viewMode) {
+  private canStageFile(file: WorkingDirectoryFileChange): boolean {
+    const status = file.unstagedStatus ?? file.status
+    const { submoduleStatus } = status
+    const isUncommittableSubmodule =
+      submoduleStatus !== undefined &&
+      status.kind === AppFileStatusKind.Modified &&
+      !submoduleStatus.commitChanged
+
+    return (
+      !isUncommittableSubmodule &&
+      !(
+        status.kind === AppFileStatusKind.Conflicted &&
+        hasUnresolvedConflicts(status)
+      )
+    )
+  }
+
+  private onChangesViewModeChanged = async (viewMode: ChangesListViewMode) => {
+    if (
+      viewMode === this.state.viewMode ||
+      this.state.isChangingStagingWorkflow ||
+      this.state.isChangingStagedFiles
+    ) {
       return
+    }
+
+    if (
+      viewMode === ChangesListViewMode.Classic &&
+      this.props.workingDirectory.files.some(
+        file => file.hasStagedChanges && file.hasUnstagedChanges
+      )
+    ) {
+      return
+    }
+
+    if (viewMode !== ChangesListViewMode.Submodules) {
+      this.setState({ isChangingStagingWorkflow: true })
+      const changed = await this.props.dispatcher.setChangesStagingWorkflow(
+        this.props.repository,
+        viewMode === ChangesListViewMode.Tree
+      )
+
+      if (!this.isMounted) {
+        return
+      }
+
+      this.setState({ isChangingStagingWorkflow: false })
+
+      if (!changed) {
+        return
+      }
     }
 
     const groups = this.createListGroups(
@@ -698,19 +803,22 @@ export class FilterChangesList extends React.Component<
     )
 
     this.lastSelectedItems = selectedItems
-    this.filteredTreeItemsBySection.clear()
-    const changesLayoutMode =
-      viewMode === ChangesListViewMode.Submodules
-        ? this.state.changesLayoutMode
-        : viewMode
 
     this.setState({
       viewMode,
-      changesLayoutMode,
       groups,
       selectedItems,
       filteredItems: this.createFilteredItemsMapForGroups(groups),
     })
+
+    if (viewMode !== ChangesListViewMode.Submodules) {
+      this.notifyFileSelectionChanged(
+        selectedItems,
+        viewMode === ChangesListViewMode.Classic
+          ? WorkingDirectoryDiffKind.Combined
+          : undefined
+      )
+    }
   }
 
   private onClassicViewModeClick = () => {
@@ -724,56 +832,15 @@ export class FilterChangesList extends React.Component<
   private onSubmodulesViewModeClick = () => {
     this.onChangesViewModeChanged(
       this.state.viewMode === ChangesListViewMode.Submodules
-        ? this.state.changesLayoutMode
+        ? this.props.isUsingStagingWorkflow
+          ? ChangesListViewMode.Tree
+          : ChangesListViewMode.Classic
         : ChangesListViewMode.Submodules
     )
   }
 
-  private onTreeFilterListResultsChanged = (
-    section: ChangeFileListSection,
-    filteredItems: ReadonlyArray<IChangesListItem>
-  ) => {
-    this.filteredTreeItemsBySection.set(
-      section,
-      createFilteredItemsMap(filteredItems)
-    )
-
-    const combinedFilteredItems = new Map<string, IChangesListItem>()
-
-    for (const currentSection of ChangeFileListSectionOrder) {
-      const group = this.getSectionGroup(currentSection)
-      const currentFilteredItems =
-        this.filteredTreeItemsBySection.get(currentSection) ??
-        this.createFilteredItemsMapForGroups(group !== undefined ? [group] : [])
-
-      currentFilteredItems.forEach((item, id) =>
-        combinedFilteredItems.set(id, item)
-      )
-    }
-
-    this.setState({ filteredItems: combinedFilteredItems })
-  }
-
-  private onStagedFilterListResultsChanged = (
-    filteredItems: ReadonlyArray<IChangesListItem>
-  ) => {
-    this.onTreeFilterListResultsChanged(
-      ChangeFileListSection.Staged,
-      filteredItems
-    )
-  }
-
-  private onUnstagedFilterListResultsChanged = (
-    filteredItems: ReadonlyArray<IChangesListItem>
-  ) => {
-    this.onTreeFilterListResultsChanged(
-      ChangeFileListSection.Unstaged,
-      filteredItems
-    )
-  }
-
   private onTreeSectionResizeMouseDown = (
-    event: React.MouseEvent<HTMLDivElement>
+    event: React.MouseEvent<HTMLButtonElement>
   ) => {
     event.preventDefault()
     window.addEventListener('mousemove', this.onTreeSectionResizeMouseMove)
@@ -810,7 +877,7 @@ export class FilterChangesList extends React.Component<
   }
 
   private onTreeSectionResizeKeyDown = (
-    event: React.KeyboardEvent<HTMLDivElement>
+    event: React.KeyboardEvent<HTMLButtonElement>
   ) => {
     let treeSplitRatio: number | null = null
 
@@ -837,11 +904,25 @@ export class FilterChangesList extends React.Component<
     event: React.FormEvent<HTMLInputElement>
   ) => {
     const include = event.currentTarget.checked
-    const files = this.getSectionChanges(section)
+    const files = this.getSectionChanges(section, true).filter(
+      file => !include || this.canStageFile(file)
+    )
 
     if (files.length > 0) {
-      this.props.onIncludeChanged(files, include)
+      this.changeFileStaged(files, include)
     }
+  }
+
+  private onStagedSectionIncludeChanged = (
+    event: React.FormEvent<HTMLInputElement>
+  ) => {
+    this.onSectionIncludeChanged(ChangeFileListSection.Staged, event)
+  }
+
+  private onUnstagedSectionIncludeChanged = (
+    event: React.FormEvent<HTMLInputElement>
+  ) => {
+    this.onSectionIncludeChanged(ChangeFileListSection.Unstaged, event)
   }
 
   private getSectionCheckboxValue(
@@ -858,21 +939,32 @@ export class FilterChangesList extends React.Component<
   }
 
   private renderSectionHeader = (section: ChangeFileListSection) => {
-    const metadata = this.groupMetadata.get(section)
-    const fileCount = metadata?.fileCount ?? 0
+    const files = this.getSectionChanges(section, true)
+    const fileCount = files.length
+    const actionableFileCount =
+      section === ChangeFileListSection.Staged
+        ? fileCount
+        : files.filter(file => this.canStageFile(file)).length
     const disabled =
-      fileCount === 0 ||
+      actionableFileCount === 0 ||
       this.props.isCommitting ||
+      this.state.isChangingStagedFiles ||
       this.props.rebaseConflictState !== null
+    const labelId = `changes-file-section-${section}-label`
+    const onChange =
+      section === ChangeFileListSection.Staged
+        ? this.onStagedSectionIncludeChanged
+        : this.onUnstagedSectionIncludeChanged
 
     return (
       <div className="changes-file-section-header">
         <Checkbox
           value={this.getSectionCheckboxValue(section, fileCount)}
-          onChange={event => this.onSectionIncludeChanged(section, event)}
+          onChange={onChange}
           disabled={disabled}
+          ariaLabelledBy={labelId}
         />
-        <span className="changes-file-section-label">
+        <span id={labelId} className="changes-file-section-label">
           {ChangeFileListSectionLabels[section]}
         </span>
         <span className="changes-file-section-count">
@@ -885,7 +977,48 @@ export class FilterChangesList extends React.Component<
   private onIncludeAllChanged = (event: React.FormEvent<HTMLInputElement>) => {
     const include = event.currentTarget.checked
     const filteredItemPaths = this.getUniqueFilteredChanges()
-    this.props.onIncludeChanged(filteredItemPaths, include)
+
+    if (this.props.isUsingStagingWorkflow) {
+      const files = filteredItemPaths.filter(
+        file => !include || this.canStageFile(file)
+      )
+      if (files.length > 0) {
+        this.changeFileStaged(files, include)
+      }
+    } else {
+      this.props.onIncludeChanged(filteredItemPaths, include)
+    }
+  }
+
+  private onTreeFileStageChanged = (
+    file: WorkingDirectoryFileChange,
+    staged: boolean
+  ) => {
+    this.changeFileStaged(file, staged)
+  }
+
+  private changeFileStaged = async (
+    files:
+      | WorkingDirectoryFileChange
+      | ReadonlyArray<WorkingDirectoryFileChange>,
+    staged: boolean
+  ) => {
+    if (this.state.isChangingStagedFiles) {
+      return
+    }
+
+    this.setState({ isChangingStagedFiles: true })
+    try {
+      await this.props.dispatcher.changeFileStaged(
+        this.props.repository,
+        files,
+        staged
+      )
+    } finally {
+      if (this.isMounted) {
+        this.setState({ isChangingStagedFiles: false })
+      }
+    }
   }
 
   private renderChangedFile = (
@@ -901,17 +1034,18 @@ export class FilterChangesList extends React.Component<
 
     const file = changeListItem.change
     const selection = file.selection.getSelectionType()
-    const { submoduleStatus } = file.status
+    const status = changeListItem.status ?? file.status
+    const { submoduleStatus } = status
 
     const isUncommittableSubmodule =
       submoduleStatus !== undefined &&
-      file.status.kind === AppFileStatusKind.Modified &&
+      status.kind === AppFileStatusKind.Modified &&
       !submoduleStatus.commitChanged
 
     const isPartiallyCommittableSubmodule =
       submoduleStatus !== undefined &&
       (submoduleStatus.commitChanged ||
-        file.status.kind === AppFileStatusKind.New) &&
+        status.kind === AppFileStatusKind.New) &&
       (submoduleStatus.modifiedChanges || submoduleStatus.untrackedChanges)
 
     const includeAll =
@@ -928,14 +1062,24 @@ export class FilterChangesList extends React.Component<
       : includeAll
 
     const include =
-      baseInclude === null && changeListItem.section !== undefined
-        ? changeListItem.section === ChangeFileListSection.Staged
-        : baseInclude
+      changeListItem.section === undefined
+        ? baseInclude
+        : changeListItem.section === ChangeFileListSection.Staged
+
+    const hasUnresolvedConflict =
+      file.status.kind === AppFileStatusKind.Conflicted &&
+      hasUnresolvedConflicts(file.status)
 
     const disableSelection =
-      isCommitting || rebaseConflictState !== null || isUncommittableSubmodule
+      isCommitting ||
+      this.state.isChangingStagedFiles ||
+      rebaseConflictState !== null ||
+      isUncommittableSubmodule ||
+      hasUnresolvedConflict
 
-    const checkboxTooltip = isUncommittableSubmodule
+    const checkboxTooltip = hasUnresolvedConflict
+      ? 'Resolve this conflict before staging the file.'
+      : isUncommittableSubmodule
       ? 'This submodule change cannot be added to a commit in this repository because it contains changes that have not been committed.'
       : isPartiallyCommittableSubmodule
       ? 'Only changes that have been committed within the submodule will be added to this repository. You need to commit any other modified or untracked changes in the submodule before including them in this repository.'
@@ -944,9 +1088,20 @@ export class FilterChangesList extends React.Component<
     return (
       <ChangedFile
         file={file}
-        include={isPartiallyCommittableSubmodule && include ? null : include}
+        status={changeListItem.status}
+        include={
+          changeListItem.section === undefined &&
+          isPartiallyCommittableSubmodule &&
+          include
+            ? null
+            : include
+        }
         key={changeListItem.id}
-        onIncludeChanged={onIncludeChanged}
+        onIncludeChanged={
+          changeListItem.section === undefined
+            ? onIncludeChanged
+            : this.onTreeFileStageChanged
+        }
         availableWidth={availableWidth}
         disableSelection={disableSelection}
         checkboxTooltip={checkboxTooltip}
@@ -1137,7 +1292,8 @@ export class FilterChangesList extends React.Component<
   }
 
   private getDefaultContextMenu(
-    file: WorkingDirectoryFileChange
+    file: WorkingDirectoryFileChange,
+    section?: ChangeFileListSection
   ): ReadonlyArray<IMenuItem> {
     const { id, path, status } = file
 
@@ -1238,25 +1394,54 @@ export class FilterChangesList extends React.Component<
         })
       })
 
-    if (paths.length > 1) {
+    if (section !== undefined) {
+      const staged = section === ChangeFileListSection.Unstaged
       items.push(
         { type: 'separator' },
         {
-          label: __DARWIN__
-            ? 'Include Selected Files'
-            : 'Include selected files',
-          action: () => {
-            selectedFiles.map(file => this.props.onIncludeChanged(file, true))
+          label: staged
+            ? selectedFiles.length > 1
+              ? 'Stage selected files'
+              : 'Stage file'
+            : selectedFiles.length > 1
+            ? 'Unstage selected files'
+            : 'Unstage file',
+          action: () => this.changeFileStaged(selectedFiles, staged),
+          enabled:
+            !this.state.isChangingStagedFiles &&
+            (!staged || selectedFiles.every(file => this.canStageFile(file))),
+        }
+      )
+    }
+
+    if (paths.length > 1) {
+      if (section === undefined) {
+        items.push(
+          { type: 'separator' },
+          {
+            label: __DARWIN__
+              ? 'Include Selected Files'
+              : 'Include selected files',
+            action: () => {
+              selectedFiles.forEach(file =>
+                this.props.onIncludeChanged(file, true)
+              )
+            },
           },
-        },
-        {
-          label: __DARWIN__
-            ? 'Exclude Selected Files'
-            : 'Exclude selected files',
-          action: () => {
-            selectedFiles.map(file => this.props.onIncludeChanged(file, false))
-          },
-        },
+          {
+            label: __DARWIN__
+              ? 'Exclude Selected Files'
+              : 'Exclude selected files',
+            action: () => {
+              selectedFiles.forEach(file =>
+                this.props.onIncludeChanged(file, false)
+              )
+            },
+          }
+        )
+      }
+
+      items.push(
         { type: 'separator' },
         this.getCopySelectedPathsMenuItem(selectedFiles),
         this.getCopySelectedRelativePathsMenuItem(selectedFiles)
@@ -1332,62 +1517,10 @@ export class FilterChangesList extends React.Component<
 
     const items =
       this.props.rebaseConflictState === null
-        ? this.getDefaultContextMenu(file)
+        ? this.getDefaultContextMenu(file, item.section)
         : this.getRebaseContextMenu(file)
 
     showContextualMenu(items)
-  }
-
-  private getFilteredSubmodules() {
-    const filter = this.props.showChangesFilter
-      ? this.props.fileListFilter.filterText.toLowerCase()
-      : ''
-
-    if (filter.length === 0) {
-      return this.props.submodules
-    }
-
-    return this.props.submodules.filter(submodule =>
-      [submodule.path, submodule.sha, submodule.describe]
-        .filter(value => value.length > 0)
-        .some(value => value.toLowerCase().includes(filter))
-    )
-  }
-
-  private getSubmoduleChangeSummary(submodule: SubmoduleEntry) {
-    const changedSubmodule = this.props.workingDirectory.files.find(
-      file =>
-        file.path === submodule.path &&
-        file.status.submoduleStatus !== undefined
-    )
-
-    const status = changedSubmodule?.status.submoduleStatus
-
-    if (status === undefined) {
-      return 'Clean'
-    }
-
-    const changes = new Array<string>()
-
-    if (status.commitChanged) {
-      changes.push('Commit')
-    }
-
-    if (status.modifiedChanges) {
-      changes.push('Modified')
-    }
-
-    if (status.untrackedChanges) {
-      changes.push('Untracked')
-    }
-
-    return changes.length > 0 ? changes.join(', ') : 'Changed'
-  }
-
-  private onOpenSubmodule = (submodule: SubmoduleEntry) => {
-    this.props.onOpenSubmodule(
-      Path.join(this.props.repository.path, submodule.path)
-    )
   }
 
   private getPlaceholderMessage(
@@ -1417,8 +1550,20 @@ export class FilterChangesList extends React.Component<
   }
 
   private onScroll = (scrollTop: number, _clientHeight: number) => {
-    this.props.onChangesListScrolled(scrollTop)
+    this.props.onChangesListScrolled(scrollTop, 'classic')
   }
+
+  private onStagedScroll = (scrollTop: number, _clientHeight: number) => {
+    this.stagedScrollTop = scrollTop
+    this.props.onChangesListScrolled(scrollTop, ChangeFileListSection.Staged)
+  }
+
+  private onUnstagedScroll = (scrollTop: number, _clientHeight: number) => {
+    this.unstagedScrollTop = scrollTop
+    this.props.onChangesListScrolled(scrollTop, ChangeFileListSection.Unstaged)
+  }
+
+  private renderEmptyTreeSection = () => null
 
   private renderCommitMessageForm = (): JSX.Element => {
     const {
@@ -1456,9 +1601,11 @@ export class FilterChangesList extends React.Component<
     const fileCount = workingDirectory.files.length
 
     // Files selected to commit (to be committed) (not selected to see in diff)
-    const filesSelected = workingDirectory.files.filter(
-      f => f.selection.getSelectionType() !== DiffSelectionType.None
-    )
+    const filesSelected = this.props.isUsingStagingWorkflow
+      ? workingDirectory.files.filter(file => file.hasStagedChanges)
+      : workingDirectory.files.filter(
+          file => file.selection.getSelectionType() !== DiffSelectionType.None
+        )
 
     const anyFilesSelected = filesSelected.length > 0
 
@@ -1697,10 +1844,13 @@ export class FilterChangesList extends React.Component<
     source: ClickSource
   ) => {
     if (source.kind === 'keyboard' && item.section !== undefined) {
-      this.props.onIncludeChanged(
-        item.change,
-        item.section === ChangeFileListSection.Unstaged
-      )
+      const staged = item.section === ChangeFileListSection.Unstaged
+
+      if (staged && !this.canStageFile(item.change)) {
+        return
+      }
+
+      this.changeFileStaged(item.change, staged)
       return
     }
 
@@ -1719,20 +1869,29 @@ export class FilterChangesList extends React.Component<
     this.props.dispatcher.setChangesListFilterText(this.props.repository, text)
   }
 
-  private onFilterListResultsChanged = (
-    filteredItems: ReadonlyArray<IChangesListItem>
-  ) => {
-    this.setState({ filteredItems: createFilteredItemsMap(filteredItems) })
-  }
-
   private onFileSelectionChanged = (items: ReadonlyArray<IChangesListItem>) => {
     this.lastSelectedItems = items
     this.setState({ selectedItems: items })
 
+    this.notifyFileSelectionChanged(items)
+  }
+
+  private notifyFileSelectionChanged(
+    items: ReadonlyArray<IChangesListItem>,
+    requestedDiffKind?: WorkingDirectoryDiffKind
+  ) {
     const rows = Array.from(new Set(items.map(i => i.change.id)))
       .map(id => this.props.workingDirectory.findFileIndexByID(id))
       .filter(row => row !== -1)
-    this.props.onFileSelectionChanged(rows)
+    const selectedSection = items.length === 1 ? items[0].section : undefined
+    const diffKind =
+      requestedDiffKind ??
+      (selectedSection === ChangeFileListSection.Staged
+        ? WorkingDirectoryDiffKind.Staged
+        : selectedSection === ChangeFileListSection.Unstaged
+        ? WorkingDirectoryDiffKind.Unstaged
+        : WorkingDirectoryDiffKind.Combined)
+    this.props.onFileSelectionChanged(rows, diffKind)
   }
 
   private onFilesToCommitNotVisible = (onCommitAnyway: () => void) => {
@@ -1771,10 +1930,12 @@ export class FilterChangesList extends React.Component<
 
   private onFilterKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (this.state.viewMode === ChangesListViewMode.Tree) {
-      const preferredList =
-        this.getSectionItems(ChangeFileListSection.Staged).length > 0
-          ? this.stagedFilterListRef.current
-          : this.unstagedFilterListRef.current
+      const hasVisibleStagedItems = Array.from(
+        this.state.filteredItems.values()
+      ).some(item => item.section === ChangeFileListSection.Staged)
+      const preferredList = hasVisibleStagedItems
+        ? this.stagedFilterListRef.current
+        : this.unstagedFilterListRef.current
       preferredList?.onKeyDown(event)
       return
     }
@@ -1811,14 +1972,34 @@ export class FilterChangesList extends React.Component<
 
     const visibleFiles = this.getUniqueFilteredChanges().length
 
-    const includeAllValue = this.getCheckAllValue(
-      workingDirectory,
-      rebaseConflictState,
-      this.state.filteredItems
-    )
+    const filteredItems = Array.from(this.state.filteredItems.values())
+    const includeAllValue = this.props.isUsingStagingWorkflow
+      ? filteredItems.length === 0 ||
+        filteredItems.every(
+          item => item.section === ChangeFileListSection.Unstaged
+        )
+        ? CheckboxValue.Off
+        : filteredItems.every(
+            item => item.section === ChangeFileListSection.Staged
+          )
+        ? CheckboxValue.On
+        : CheckboxValue.Mixed
+      : this.getCheckAllValue(
+          workingDirectory,
+          rebaseConflictState,
+          this.state.filteredItems
+        )
 
     const disableAllCheckbox =
-      files.length === 0 || isCommitting || rebaseConflictState !== null
+      files.length === 0 ||
+      filteredItems.every(
+        item =>
+          item.section === ChangeFileListSection.Unstaged &&
+          !this.canStageFile(item.change)
+      ) ||
+      isCommitting ||
+      this.state.isChangingStagedFiles ||
+      rebaseConflictState !== null
 
     const checkAllLabel = `${
       visibleFiles !== files.length ? `${formatNumber(visibleFiles)} of ` : ''
@@ -1827,15 +2008,17 @@ export class FilterChangesList extends React.Component<
 
     return (
       <div className="checkbox-container">
-        <Checkbox
-          ref={this.includeAllCheckBoxRef}
-          value={includeAllValue}
-          onChange={this.onIncludeAllChanged}
-          disabled={disableAllCheckbox}
-          ariaLabelledBy="changes-list-check-all-label"
-          className="changes-list-check-all"
-          label={checkAllLabel}
-        />
+        {!isSubmodulesView && (
+          <Checkbox
+            ref={this.includeAllCheckBoxRef}
+            value={includeAllValue}
+            onChange={this.onIncludeAllChanged}
+            disabled={disableAllCheckbox}
+            ariaLabelledBy="changes-list-check-all-label"
+            className="changes-list-check-all"
+            label={checkAllLabel}
+          />
+        )}
         {showSubmodulesView && (
           <Button
             className={classNames('submodules-view-button', {
@@ -1860,6 +2043,12 @@ export class FilterChangesList extends React.Component<
     const isTreeView = this.state.viewMode === ChangesListViewMode.Tree
     const isSubmodulesView =
       this.state.viewMode === ChangesListViewMode.Submodules
+    const hasPartiallyStagedFiles = this.props.workingDirectory.files.some(
+      file => file.hasStagedChanges && file.hasUnstagedChanges
+    )
+    const classicViewTooltip = hasPartiallyStagedFiles
+      ? 'Unstage or commit partially staged files before switching to Classic view.'
+      : undefined
 
     return (
       <div className="filter-box-container">
@@ -1874,6 +2063,12 @@ export class FilterChangesList extends React.Component<
               selected: isClassicView,
             })}
             aria-pressed={isClassicView}
+            disabled={
+              this.state.isChangingStagingWorkflow ||
+              this.state.isChangingStagedFiles ||
+              hasPartiallyStagedFiles
+            }
+            aria-label={classicViewTooltip ?? 'Classic view'}
             onClick={this.onClassicViewModeClick}
           >
             Classic
@@ -1884,6 +2079,10 @@ export class FilterChangesList extends React.Component<
               selected: isTreeView,
             })}
             aria-pressed={isTreeView}
+            disabled={
+              this.state.isChangingStagingWorkflow ||
+              this.state.isChangingStagedFiles
+            }
             onClick={this.onTreeViewModeClick}
           >
             Tree
@@ -1905,7 +2104,6 @@ export class FilterChangesList extends React.Component<
                 onFilterModifiedFiles={this.onFilterModifiedFiles}
                 onFilterNewFiles={this.onFilterNewFiles}
                 onClearAllFilters={this.onClearAllFilters}
-                workingDirectory={this.props.workingDirectory}
               />
             )}
             <TextBox
@@ -1972,7 +2170,6 @@ export class FilterChangesList extends React.Component<
             : ''
         }
         filterTextBox={this.filterTextBox}
-        onFilterListResultsChanged={this.onFilterListResultsChanged}
         selectedItems={this.state.selectedItems}
         selectionMode="multi"
         renderItem={this.renderChangedFile}
@@ -1999,9 +2196,6 @@ export class FilterChangesList extends React.Component<
   private renderTreeSection = (
     section: ChangeFileListSection,
     ref: React.RefObject<AugmentedSectionFilterList<IChangesListItem>>,
-    onFilterListResultsChanged: (
-      filteredItems: ReadonlyArray<IChangesListItem>
-    ) => void,
     style: React.CSSProperties
   ) => {
     const group = this.getSectionGroup(section) ?? {
@@ -2009,6 +2203,7 @@ export class FilterChangesList extends React.Component<
       showHeader: false,
       items: [],
     }
+    const isStagedSection = section === ChangeFileListSection.Staged
 
     return (
       <div className="changes-file-section" style={style}>
@@ -2023,14 +2218,22 @@ export class FilterChangesList extends React.Component<
               : ''
           }
           filterTextBox={this.filterTextBox}
-          onFilterListResultsChanged={onFilterListResultsChanged}
-          selectedItems={this.state.selectedItems}
+          selectedItems={this.state.selectedItems.filter(
+            item => item.section === section
+          )}
+          selectFirstItemOnFilter={false}
           selectionMode="multi"
           renderItem={this.renderChangedFile}
           onItemClick={this.onChangedFileClick}
           onItemDoubleClick={this.onChangedFileDoubleClick}
           onItemKeyboardFocus={this.onChangedFileFocus}
           onItemBlur={this.onChangedFileBlur}
+          onScroll={
+            isStagedSection ? this.onStagedScroll : this.onUnstagedScroll
+          }
+          setScrollTop={
+            isStagedSection ? this.stagedScrollTop : this.unstagedScrollTop
+          }
           onItemKeyDown={this.onItemKeyDown}
           onSelectionChanged={this.onFileSelectionChanged}
           groups={[group]}
@@ -2039,7 +2242,7 @@ export class FilterChangesList extends React.Component<
           onItemContextMenu={this.onItemContextMenu}
           hideFilterRow={true}
           getGroupAriaLabel={this.getListAriaLabel}
-          renderNoItems={() => null}
+          renderNoItems={this.renderEmptyTreeSection}
           postNoResultsMessage={getNoResultsMessage(this.props.fileListFilter)}
         />
       </div>
@@ -2055,25 +2258,20 @@ export class FilterChangesList extends React.Component<
         {this.renderTreeSection(
           ChangeFileListSection.Staged,
           this.stagedFilterListRef,
-          this.onStagedFilterListResultsChanged,
           { flexBasis: stagedBasis }
         )}
-        <div
+        <button
+          type="button"
           className="changes-file-section-resizer"
-          role="separator"
-          aria-label="Resize staged and unstaged files"
-          aria-orientation="horizontal"
-          aria-valuemin={MinTreeSplitRatio * 100}
-          aria-valuemax={MaxTreeSplitRatio * 100}
-          aria-valuenow={Math.round(this.state.treeSplitRatio * 100)}
-          tabIndex={0}
+          aria-label={`Resize staged and unstaged files, ${Math.round(
+            this.state.treeSplitRatio * 100
+          )} percent staged`}
           onMouseDown={this.onTreeSectionResizeMouseDown}
           onKeyDown={this.onTreeSectionResizeKeyDown}
         />
         {this.renderTreeSection(
           ChangeFileListSection.Unstaged,
           this.unstagedFilterListRef,
-          this.onUnstagedFilterListResultsChanged,
           { flexBasis: unstagedBasis }
         )}
       </div>
@@ -2081,63 +2279,19 @@ export class FilterChangesList extends React.Component<
   }
 
   private renderSubmodulesList = () => {
-    const submodules = this.getFilteredSubmodules()
-
-    if (this.props.submodules.length === 0) {
-      return (
-        <div className="submodules-list-empty">
-          This repository does not have submodules.
-        </div>
-      )
-    }
-
-    if (submodules.length === 0) {
-      return (
-        <div className="submodules-list-empty">
-          No submodules match the current filter.
-        </div>
-      )
-    }
-
     return (
-      <div className="submodules-list-view" role="list">
-        {submodules.map(submodule => {
-          const shortSha = submodule.sha.substring(0, 7)
-          const detail =
-            submodule.describe.length > 0
-              ? `${shortSha} · ${submodule.describe}`
-              : shortSha
-
-          return (
-            <button
-              key={submodule.path}
-              type="button"
-              className="submodule-list-item"
-              onClick={() => this.onOpenSubmodule(submodule)}
-              title={submodule.path}
-              role="listitem"
-            >
-              <Octicon
-                className="submodule-list-item-icon"
-                symbol={octicons.fileSubmodule}
-              />
-              <span className="submodule-list-item-content">
-                <span className="submodule-list-item-path">
-                  {submodule.path}
-                </span>
-                <span className="submodule-list-item-detail">{detail}</span>
-              </span>
-              <span className="submodule-list-item-status">
-                {this.getSubmoduleChangeSummary(submodule)}
-              </span>
-              <Octicon
-                className="submodule-list-item-open"
-                symbol={octicons.chevronRight}
-              />
-            </button>
-          )
-        })}
-      </div>
+      <SubmodulesList
+        dispatcher={this.props.dispatcher}
+        repository={this.props.repository}
+        submodules={this.props.submodules}
+        workingDirectory={this.props.workingDirectory}
+        filterText={
+          this.props.showChangesFilter
+            ? this.props.fileListFilter.filterText
+            : ''
+        }
+        onOpenSubmodule={this.props.onOpenSubmodule}
+      />
     )
   }
 
@@ -2161,9 +2315,11 @@ export class FilterChangesList extends React.Component<
 
   private renderHiddenChangesWarning = () => {
     const { files } = this.props.workingDirectory
-    const filesSelected = files.filter(
-      f => f.selection.getSelectionType() !== DiffSelectionType.None
-    )
+    const filesSelected = this.props.isUsingStagingWorkflow
+      ? files.filter(file => file.hasStagedChanges)
+      : files.filter(
+          file => file.selection.getSelectionType() !== DiffSelectionType.None
+        )
 
     if (
       !isCommittingFileHiddenByFilter(
