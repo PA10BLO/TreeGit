@@ -38,11 +38,7 @@ import { IStatusEntry } from '../status-parser'
 import { createLogParser } from './git-delimiter-parser'
 import { enableImagePreviewsForDDSFiles } from '../feature-flag'
 import { unstageAll } from './reset'
-import {
-  createIndexSnapshot,
-  restoreIndexSnapshot,
-  stageFiles,
-} from './update-index'
+import { stageFiles, withTemporaryIndex } from './update-index'
 import { isAbsolute } from 'path'
 
 /**
@@ -622,15 +618,6 @@ export async function getFilesDiffText(
   commitish?: string,
   preserveIndex: boolean = false
 ): Promise<string> {
-  let indexSnapshot: Awaited<ReturnType<typeof createIndexSnapshot>> | null =
-    null
-
-  if (!preserveIndex) {
-    // Classic mode models commit inclusion in memory, so materialize that
-    // selection in the index for the duration of this operation.
-    indexSnapshot = await createIndexSnapshot(repository)
-  }
-
   // `--no-ext-diff` should be provided wherever we invoke `git diff` so that any
   // diff.external program configured by the user is ignored
   const args = [
@@ -643,23 +630,20 @@ export async function getFilesDiffText(
   ]
   const successExitCodes = new Set([0])
 
-  let stdout: Buffer
-  try {
+  const getDiff = async () => {
     if (!preserveIndex) {
       await unstageAll(repository)
       await stageFiles(repository, files)
     }
 
-    const result = await git(args, repository.path, 'getFilesDiffText', {
+    return git(args, repository.path, 'getFilesDiffText', {
       successExitCodes,
       encoding: 'buffer',
     })
-    stdout = result.stdout
-  } finally {
-    if (indexSnapshot !== null) {
-      await restoreIndexSnapshot(indexSnapshot)
-    }
   }
+  const { stdout } = preserveIndex
+    ? await getDiff()
+    : await withTemporaryIndex(repository, getDiff)
 
   // No more than 10MB
   if (stdout.length > 10 * 1024 * 1024) {

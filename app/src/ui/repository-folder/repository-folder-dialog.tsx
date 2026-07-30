@@ -47,20 +47,11 @@ export class RepositoryFolderDialog extends React.Component<
 
   public render() {
     const isRenaming = this.props.initialName !== undefined
-    const title = isRenaming
-      ? __DARWIN__
-        ? 'Rename Repository Folder'
-        : 'Rename repository folder'
-      : __DARWIN__
-      ? 'New Repository Folder'
-      : 'New repository folder'
-    const action = isRenaming
-      ? __DARWIN__
-        ? 'Rename Folder'
-        : 'Rename folder'
-      : __DARWIN__
-      ? 'Create Folder'
-      : 'Create folder'
+    const verb = isRenaming ? 'Rename' : 'Create'
+    const title = `${isRenaming ? 'Rename' : 'New'} ${
+      __DARWIN__ ? 'Repository Folder' : 'repository folder'
+    }`
+    const action = `${verb} ${__DARWIN__ ? 'Folder' : 'folder'}`
     return (
       <Dialog
         id="repository-folder"

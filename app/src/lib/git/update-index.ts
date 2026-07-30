@@ -223,3 +223,37 @@ export async function restoreIndexSnapshot(
     await unlink(restorePath).catch(() => {})
   }
 }
+
+export async function withTemporaryIndex<T>(
+  repository: Repository,
+  operation: () => Promise<T>
+): Promise<T> {
+  const snapshot = await createIndexSnapshot(repository)
+
+  try {
+    return await operation()
+  } finally {
+    await restoreIndexSnapshot(snapshot)
+  }
+}
+
+export async function rollbackIndexOnError<T>(
+  repository: Repository,
+  operation: () => Promise<T>
+): Promise<T> {
+  const snapshot = await createIndexSnapshot(repository)
+
+  try {
+    return await operation()
+  } catch (error) {
+    try {
+      await restoreIndexSnapshot(snapshot)
+    } catch (restoreError) {
+      log.error(
+        'Failed to restore the index after an operation error',
+        restoreError
+      )
+    }
+    throw error
+  }
+}

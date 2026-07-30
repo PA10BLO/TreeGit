@@ -1,9 +1,5 @@
 import { git, HookCallbackOptions, parseCommitSHA } from './core'
-import {
-  createIndexSnapshot,
-  restoreIndexSnapshot,
-  stageFiles,
-} from './update-index'
+import { rollbackIndexOnError, stageFiles } from './update-index'
 import { Repository } from '../../models/repository'
 import { WorkingDirectoryFileChange } from '../../models/status'
 import { unstageAll } from './reset'
@@ -28,13 +24,6 @@ export async function createCommit(
     allowEmpty?: boolean
   } & HookCallbackOptions
 ): Promise<string> {
-  let indexSnapshot: Awaited<ReturnType<typeof createIndexSnapshot>> | null =
-    null
-
-  if (options?.preserveIndex !== true) {
-    indexSnapshot = await createIndexSnapshot(repository)
-  }
-
   const args = ['-F', '-']
 
   if (options?.amend) {
@@ -53,15 +42,7 @@ export async function createCommit(
     args.push('--allow-empty')
   }
 
-  try {
-    // Clear the staging area, our diffs reflect the difference between the
-    // working directory and the last commit (if any) so our commits should
-    // do the same thing.
-    if (options?.preserveIndex !== true) {
-      await unstageAll(repository)
-      await stageFiles(repository, files)
-    }
-
+  const commit = async () => {
     const result = await git(
       ['commit', ...args],
       repository.path,
@@ -83,19 +64,18 @@ export async function createCommit(
       }
     )
     return parseCommitSHA(result)
-  } catch (error) {
-    if (indexSnapshot !== null) {
-      try {
-        await restoreIndexSnapshot(indexSnapshot)
-      } catch (restoreError) {
-        log.error(
-          'Failed to restore the index after a commit error',
-          restoreError
-        )
-      }
-    }
-    throw error
   }
+
+  if (options?.preserveIndex === true) {
+    return commit()
+  }
+
+  return rollbackIndexOnError(repository, async () => {
+    // Classic mode materializes its in-memory selection in the index.
+    await unstageAll(repository)
+    await stageFiles(repository, files)
+    return commit()
+  })
 }
 
 /**

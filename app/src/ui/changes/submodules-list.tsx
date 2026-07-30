@@ -22,146 +22,128 @@ interface ISubmodulesListProps {
   readonly onOpenSubmodule: (fullPath: string) => void
 }
 
-export class SubmodulesList extends React.Component<ISubmodulesListProps> {
-  private getFilteredSubmodules() {
-    const filter = this.props.filterText.toLowerCase()
-
-    if (filter.length === 0) {
-      return this.props.submodules
-    }
-
-    return this.props.submodules.filter(submodule =>
-      [submodule.path, submodule.sha, submodule.describe]
-        .filter(value => value.length > 0)
-        .some(value => value.toLowerCase().includes(filter))
-    )
+function getChangeSummary(
+  submodule: SubmoduleEntry,
+  workingDirectory: WorkingDirectoryStatus
+) {
+  if (submodule.workingTreeState === SubmoduleWorkingTreeState.Uninitialized) {
+    return 'Not initialized'
   }
 
-  private getChangeSummary(submodule: SubmoduleEntry) {
-    if (
-      submodule.workingTreeState === SubmoduleWorkingTreeState.Uninitialized
-    ) {
-      return 'Not initialized'
-    }
-
-    if (submodule.workingTreeState === SubmoduleWorkingTreeState.Conflicted) {
-      return 'Conflicted'
-    }
-
-    const changedSubmodule = this.props.workingDirectory.files.find(
-      file =>
-        file.path === submodule.path &&
-        file.status.submoduleStatus !== undefined
-    )
-    const status = changedSubmodule?.status.submoduleStatus
-
-    if (status === undefined) {
-      return submodule.workingTreeState ===
-        SubmoduleWorkingTreeState.CommitChanged
-        ? 'Commit'
-        : 'Clean'
-    }
-
-    const changes = new Array<string>()
-
-    if (status.commitChanged) {
-      changes.push('Commit')
-    }
-    if (status.modifiedChanges) {
-      changes.push('Modified')
-    }
-    if (status.untrackedChanges) {
-      changes.push('Untracked')
-    }
-
-    return changes.length > 0 ? changes.join(', ') : 'Changed'
+  if (submodule.workingTreeState === SubmoduleWorkingTreeState.Conflicted) {
+    return 'Conflicted'
   }
 
-  private onOpenSubmodule = async (
-    event: React.MouseEvent<HTMLButtonElement>
-  ) => {
-    const submodulePath = event.currentTarget.value
-    const submodule = this.props.submodules.find(
-      candidate => candidate.path === submodulePath
-    )
+  const status = workingDirectory.files.find(
+    file =>
+      file.path === submodule.path && file.status.submoduleStatus !== undefined
+  )?.status.submoduleStatus
 
-    if (submodule === undefined) {
-      return
-    }
+  if (status === undefined) {
+    return submodule.workingTreeState ===
+      SubmoduleWorkingTreeState.CommitChanged
+      ? 'Commit'
+      : 'Clean'
+  }
+
+  const changes = [
+    status.commitChanged ? 'Commit' : null,
+    status.modifiedChanges ? 'Modified' : null,
+    status.untrackedChanges ? 'Untracked' : null,
+  ].filter((change): change is string => change !== null)
+
+  return changes.length > 0 ? changes.join(', ') : 'Changed'
+}
+
+interface ISubmoduleRowProps {
+  readonly dispatcher: Dispatcher
+  readonly repository: Repository
+  readonly submodule: SubmoduleEntry
+  readonly summary: string
+  readonly onOpenSubmodule: (fullPath: string) => void
+}
+
+class SubmoduleRow extends React.Component<ISubmoduleRowProps> {
+  private onOpen = async () => {
+    const { dispatcher, repository, submodule, onOpenSubmodule } = this.props
 
     if (
       submodule.workingTreeState === SubmoduleWorkingTreeState.Uninitialized &&
-      !(await this.props.dispatcher.initializeSubmodule(
-        this.props.repository,
-        submodule.path
-      ))
+      !(await dispatcher.initializeSubmodule(repository, submodule.path))
     ) {
       return
     }
 
-    this.props.onOpenSubmodule(
-      Path.join(this.props.repository.path, submodule.path)
-    )
+    onOpenSubmodule(Path.join(repository.path, submodule.path))
   }
 
   public render() {
-    const submodules = this.getFilteredSubmodules()
-
-    if (this.props.submodules.length === 0) {
-      return (
-        <div className="submodules-list-empty">
-          This repository does not have submodules.
-        </div>
-      )
-    }
-
-    if (submodules.length === 0) {
-      return (
-        <div className="submodules-list-empty">
-          No submodules match the current filter.
-        </div>
-      )
-    }
+    const { submodule, summary } = this.props
+    const shortSha = submodule.sha.substring(0, 7)
+    const detail =
+      submodule.describe.length > 0
+        ? `${shortSha} · ${submodule.describe}`
+        : shortSha
 
     return (
-      <div className="submodules-list-view" role="list">
-        {submodules.map(submodule => {
-          const shortSha = submodule.sha.substring(0, 7)
-          const detail =
-            submodule.describe.length > 0
-              ? `${shortSha} · ${submodule.describe}`
-              : shortSha
-          const summary = this.getChangeSummary(submodule)
-
-          return (
-            <div key={submodule.path} role="listitem">
-              <button
-                type="button"
-                value={submodule.path}
-                className="submodule-list-item"
-                aria-label={`${submodule.path}, ${summary}`}
-                onClick={this.onOpenSubmodule}
-              >
-                <Octicon
-                  className="submodule-list-item-icon"
-                  symbol={octicons.fileSubmodule}
-                />
-                <span className="submodule-list-item-content">
-                  <span className="submodule-list-item-path">
-                    {submodule.path}
-                  </span>
-                  <span className="submodule-list-item-detail">{detail}</span>
-                </span>
-                <span className="submodule-list-item-status">{summary}</span>
-                <Octicon
-                  className="submodule-list-item-open"
-                  symbol={octicons.chevronRight}
-                />
-              </button>
-            </div>
-          )
-        })}
+      <div role="listitem">
+        <button
+          type="button"
+          className="submodule-list-item"
+          aria-label={`${submodule.path}, ${summary}`}
+          onClick={this.onOpen}
+        >
+          <Octicon
+            className="submodule-list-item-icon"
+            symbol={octicons.fileSubmodule}
+          />
+          <span className="submodule-list-item-content">
+            <span className="submodule-list-item-path">{submodule.path}</span>
+            <span className="submodule-list-item-detail">{detail}</span>
+          </span>
+          <span className="submodule-list-item-status">{summary}</span>
+          <Octicon
+            className="submodule-list-item-open"
+            symbol={octicons.chevronRight}
+          />
+        </button>
       </div>
     )
   }
+}
+
+export function SubmodulesList(props: ISubmodulesListProps) {
+  const filter = props.filterText.toLowerCase()
+  const submodules =
+    filter.length === 0
+      ? props.submodules
+      : props.submodules.filter(submodule =>
+          [submodule.path, submodule.sha, submodule.describe].some(value =>
+            value.toLowerCase().includes(filter)
+          )
+        )
+
+  if (submodules.length === 0) {
+    const message =
+      props.submodules.length === 0
+        ? 'This repository does not have submodules.'
+        : 'No submodules match the current filter.'
+
+    return <div className="submodules-list-empty">{message}</div>
+  }
+
+  return (
+    <div className="submodules-list-view" role="list">
+      {submodules.map(submodule => (
+        <SubmoduleRow
+          key={submodule.path}
+          dispatcher={props.dispatcher}
+          repository={props.repository}
+          submodule={submodule}
+          summary={getChangeSummary(submodule, props.workingDirectory)}
+          onOpenSubmodule={props.onOpenSubmodule}
+        />
+      ))}
+    </div>
+  )
 }

@@ -78,11 +78,7 @@ import {
   getRemoteHEAD,
   MergeOptions,
 } from '../git'
-import {
-  createIndexSnapshot,
-  restoreIndexSnapshot,
-  stageFiles,
-} from '../git/update-index'
+import { rollbackIndexOnError, stageFiles } from '../git/update-index'
 import { GitError as DugiteError } from '../../lib/git'
 import { GitError } from 'dugite'
 import { RetryAction, RetryActionType } from '../../models/retry-actions'
@@ -1278,24 +1274,12 @@ export class GitStore extends BaseStore {
   private async performIndexOperation(
     operation: () => Promise<void>
   ): Promise<boolean> {
-    const result = await this.performFailableOperation(async () => {
-      const indexSnapshot = await createIndexSnapshot(this.repository)
-
-      try {
+    const result = await this.performFailableOperation(() =>
+      rollbackIndexOnError(this.repository, async () => {
         await operation()
         return true
-      } catch (error) {
-        try {
-          await restoreIndexSnapshot(indexSnapshot)
-        } catch (restoreError) {
-          log.error(
-            'Failed to restore the index after an index operation error',
-            restoreError
-          )
-        }
-        throw error
-      }
-    })
+      })
+    )
 
     return result === true
   }

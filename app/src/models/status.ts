@@ -303,14 +303,18 @@ export class WorkingDirectoryFileChange extends FileChange {
     path: string,
     status: AppFileStatus,
     public readonly selection: DiffSelection,
-    public readonly hasStagedChanges: boolean = false,
-    public readonly hasUnstagedChanges: boolean = true,
     public readonly stagedStatus: AppFileStatus | null = null,
-    public readonly unstagedStatus: AppFileStatus | null = hasUnstagedChanges
-      ? status
-      : null
+    public readonly unstagedStatus: AppFileStatus | null = status
   ) {
     super(path, status)
+  }
+
+  public get hasStagedChanges(): boolean {
+    return this.stagedStatus !== null
+  }
+
+  public get hasUnstagedChanges(): boolean {
+    return this.unstagedStatus !== null
   }
 
   /** Create a new WorkingDirectoryFileChange with the given includedness. */
@@ -328,8 +332,6 @@ export class WorkingDirectoryFileChange extends FileChange {
       this.path,
       this.status,
       selection,
-      this.hasStagedChanges,
-      this.hasUnstagedChanges,
       this.stagedStatus,
       this.unstagedStatus
     )

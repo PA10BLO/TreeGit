@@ -33,57 +33,10 @@ const getCanonicalFolderName = (
 }
 
 export function loadRepositoryFolders(): IRepositoryFoldersState {
-  const stored = getObject<Partial<IRepositoryFoldersState>>(
-    RepositoryFoldersStorageKey
+  return (
+    getObject<IRepositoryFoldersState>(RepositoryFoldersStorageKey) ??
+    EmptyRepositoryFoldersState
   )
-
-  if (
-    stored === undefined ||
-    !Array.isArray(stored.folders) ||
-    stored.folders.some(folder => typeof folder !== 'string')
-  ) {
-    return EmptyRepositoryFoldersState
-  }
-
-  const folders = stored.folders
-    .map(folder => folder.trim())
-    .filter(
-      (folder, index, values) =>
-        folder.length > 0 &&
-        values.findIndex(
-          value => value.toLowerCase() === folder.toLowerCase()
-        ) === index
-    )
-  const assignments =
-    stored.assignments !== null &&
-    typeof stored.assignments === 'object' &&
-    !Array.isArray(stored.assignments)
-      ? Object.fromEntries(
-          Object.entries(stored.assignments).flatMap(
-            ([repositoryKey, folder]) => {
-              if (typeof folder !== 'string') {
-                return []
-              }
-
-              const canonicalName = getCanonicalFolderName(folders, folder)
-              return canonicalName === null
-                ? []
-                : [[repositoryKey, canonicalName]]
-            }
-          )
-        )
-      : {}
-  const collapsedFolders = Array.isArray(stored.collapsedFolders)
-    ? stored.collapsedFolders
-        .filter(folder => typeof folder === 'string')
-        .flatMap(folder => {
-          const canonicalName = getCanonicalFolderName(folders, folder)
-          return canonicalName === null ? [] : [canonicalName]
-        })
-        .filter((folder, index, values) => values.indexOf(folder) === index)
-    : []
-
-  return { folders, assignments, collapsedFolders }
 }
 
 export function saveRepositoryFolders(state: IRepositoryFoldersState) {
@@ -118,20 +71,23 @@ export function assignRepositoryFolder(
   repository: Repository,
   folder: string | null
 ): IRepositoryFoldersState {
-  const assignments = { ...state.assignments }
   const repositoryKey = getRepositoryKey(repository)
 
   if (folder === null) {
+    const assignments = { ...state.assignments }
     delete assignments[repositoryKey]
-  } else {
-    const canonicalName = getCanonicalFolderName(state.folders, folder)
-    if (canonicalName === null) {
-      return state
-    }
-    assignments[repositoryKey] = canonicalName
+    return { ...state, assignments }
   }
 
-  return { ...state, assignments }
+  const canonicalName = getCanonicalFolderName(state.folders, folder)
+  if (canonicalName === null) {
+    return state
+  }
+
+  return {
+    ...state,
+    assignments: { ...state.assignments, [repositoryKey]: canonicalName },
+  }
 }
 
 export function renameRepositoryFolder(
@@ -154,21 +110,18 @@ export function renameRepositoryFolder(
     return state
   }
 
-  const assignments = Object.fromEntries(
-    Object.entries(state.assignments).map(([repositoryKey, folder]) => [
-      repositoryKey,
-      folder === canonicalCurrentName ? folderName : folder,
-    ])
-  )
+  const rename = (folder: string) =>
+    folder === canonicalCurrentName ? folderName : folder
 
   return {
-    folders: state.folders.map(folder =>
-      folder === canonicalCurrentName ? folderName : folder
+    folders: state.folders.map(rename),
+    assignments: Object.fromEntries(
+      Object.entries(state.assignments).map(([repositoryKey, folder]) => [
+        repositoryKey,
+        rename(folder),
+      ])
     ),
-    assignments,
-    collapsedFolders: state.collapsedFolders.map(folder =>
-      folder === canonicalCurrentName ? folderName : folder
-    ),
+    collapsedFolders: state.collapsedFolders.map(rename),
   }
 }
 

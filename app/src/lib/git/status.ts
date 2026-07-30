@@ -418,8 +418,6 @@ function buildStatusMap(
     sectionStatuses.stagedStatus ?? existingFile?.stagedStatus ?? null
   const unstagedStatus =
     sectionStatuses.unstagedStatus ?? existingFile?.unstagedStatus ?? null
-  const hasStagedChanges = stagedStatus !== null
-  const hasUnstagedChanges = unstagedStatus !== null
   const combinedStatus =
     stagedStatus?.kind === AppFileStatusKind.Deleted &&
     unstagedStatus?.kind === AppFileStatusKind.Untracked
@@ -444,8 +442,6 @@ function buildStatusMap(
       entry.path,
       combinedStatus,
       selection,
-      hasStagedChanges,
-      hasUnstagedChanges,
       stagedStatus,
       unstagedStatus
     )
