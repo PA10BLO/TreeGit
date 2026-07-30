@@ -405,6 +405,14 @@ function buildStatusMap(
     entry.renameOrCopyScore
   )
 
+  if (
+    status.kind === 'ordinary' &&
+    status.index === GitStatusEntry.Added &&
+    status.workingTree === GitStatusEntry.Deleted
+  ) {
+    return files
+  }
+
   // for now we just poke at the existing summary
   const appStatus = convertToAppStatus(
     entry.path,
@@ -418,19 +426,11 @@ function buildStatusMap(
     sectionStatuses.stagedStatus ?? existingFile?.stagedStatus ?? null
   const unstagedStatus =
     sectionStatuses.unstagedStatus ?? existingFile?.unstagedStatus ?? null
-  const combinedStatus =
-    stagedStatus?.kind === AppFileStatusKind.Deleted &&
-    unstagedStatus?.kind === AppFileStatusKind.Untracked
-      ? {
-          kind: AppFileStatusKind.Modified as const,
-          submoduleStatus: appStatus.submoduleStatus,
-        }
-      : appStatus
 
   const initialSelectionType =
-    combinedStatus.kind === AppFileStatusKind.Modified &&
-    combinedStatus.submoduleStatus !== undefined &&
-    !combinedStatus.submoduleStatus.commitChanged
+    appStatus.kind === AppFileStatusKind.Modified &&
+    appStatus.submoduleStatus !== undefined &&
+    !appStatus.submoduleStatus.commitChanged
       ? DiffSelectionType.None
       : DiffSelectionType.All
 
@@ -440,7 +440,7 @@ function buildStatusMap(
     entry.path,
     new WorkingDirectoryFileChange(
       entry.path,
-      combinedStatus,
+      appStatus,
       selection,
       stagedStatus,
       unstagedStatus
